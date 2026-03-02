@@ -1052,9 +1052,8 @@
     @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slide-up { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-    /* ── RESPONSIVE ── */
+    /* ── RESPONSIVE — tablet ── */
     @media (max-width: 700px) {
-      :root { --sidebar-w: 52px; }
       .player-track { flex: 0 0 180px; }
       .player-extras { display: none; }
       .full-player-body { flex-direction: column; padding: 16px 20px; gap: 16px; }
@@ -1065,8 +1064,105 @@
       .library-filters { padding: 8px 16px; }
       #playlists-main { padding: 8px 16px; }
     }
-    @media (max-width: 480px) {
+
+    /* ── RESPONSIVE — mobile (bottom tab bar) ── */
+    @media (max-width: 520px) {
+      :root {
+        --sidebar-w: 0px;
+        --tabbar-h: 56px;
+      }
+
+      /* 1-column layout: main fills everything */
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto;
+      }
+
+      /* Sidebar → fixed bottom tab bar */
+      #sidebar {
+        grid-column: 1; grid-row: 2;
+        flex-direction: row;
+        justify-content: space-around;
+        align-items: center;
+        padding: 0;
+        width: 100%;
+        height: var(--tabbar-h);
+        border-right: none;
+        border-top: 1px solid var(--border);
+        position: fixed;
+        bottom: var(--player-h);
+        left: 0; right: 0;
+        z-index: 30;
+        background: #0e0e0e;
+      }
+      #sidebar .logo { display: none; }
+      #sidebar .stats-pill { display: none; }
+      #sidebar .nav-btn { width: 48px; height: 48px; margin: 0; }
+
+      /* Main: span full width, pad bottom for player + tabbar */
+      #main {
+        grid-column: 1; grid-row: 1;
+        padding-bottom: 0;
+      }
+
+      /* Player bar: fixed at very bottom */
+      #player-bar {
+        grid-column: 1; grid-row: 2;
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        z-index: 40;
+      }
+
+      /* Discover view: more compact, full width */
+      #view-discover {
+        padding: 12px 12px 0;
+        gap: 12px;
+        padding-bottom: calc(var(--player-h) + var(--tabbar-h) + 12px);
+        overflow-y: auto;
+        justify-content: flex-start;
+      }
+
+      /* Preset buttons: single horizontal scrollable row */
+      #preset-sessions {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        justify-content: flex-start;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        width: 100%;
+      }
+      #preset-sessions::-webkit-scrollbar { display: none; }
+
+      /* Card stack: full available width */
+      #card-stack {
+        width: min(360px, 96vw);
+        height: min(460px, 56vh);
+      }
+
+      /* Action buttons: tighter spacing */
+      #card-actions {
+        gap: 14px;
+      }
+      .action-btn.skip  { width: 52px; height: 52px; }
+      .action-btn.like  { width: 60px; height: 60px; }
+      .action-btn.listen{ width: 44px; height: 44px; }
+      .action-btn.undo  { width: 40px; height: 40px; }
+
+      /* Library: list rows full width */
+      .view-header { padding: 12px 12px 10px; }
+      .library-filters { padding: 6px 12px; }
+      #playlists-main { padding: 8px 12px; }
+
+      /* Player bar: more compact on small screens */
+      .player-track { flex: 1 1 0; min-width: 0; }
+      .player-controls { flex: 0 0 auto; }
       .player-controls .player-progress-row { display: none; }
+
+      /* Full player */
+      .full-player-body { flex-direction: column; padding: 12px 16px; gap: 12px; }
+      .full-art-side { flex: 0 0 auto; }
+      #full-art { width: min(200px, 65vw); height: min(200px, 65vw); }
       .full-btns { gap: 8px; }
     }
   </style>
