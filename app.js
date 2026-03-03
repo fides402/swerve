@@ -545,7 +545,12 @@ const DiscogsEngine = {
     for (const cfgIdx of cfgArr) {
       if (tracks.length >= count) break;
       const cfg  = configs[cfgIdx];
-      const page = Math.floor(Math.random() * 25) + 1; // 1-25, fresh every call
+      // Bias toward earlier pages (higher want-count = more sought-after releases)
+      // 65% → pages 1-8 (sweet spot of obscure-but-findable), 35% → pages 9-25 (deeper discovery)
+      const _pageRaw = Math.random() < 0.65
+        ? Math.ceil(Math.random() * 8)
+        : Math.ceil(Math.random() * 17) + 8;
+      const page = Math.max(1, _pageRaw);
 
       // 50% most-wanted sort (surface well-regarded but obscure), 50% default order
       const sortParams = Math.random() < 0.5 ? { sort: 'want', sort_order: 'desc' } : {};
@@ -720,6 +725,135 @@ const EnrichEngine = {
   }
 };
 
+
+// ─── SIMILAR ARTIST ENGINE ────────────────────────────────────────────────────
+// Uses Last.fm artist.getSimilar to find artists close to the user's taste,
+// then searches Discogs for their releases. Runs in the background (non-blocking)
+// and pushes found tracks directly into S.queue to supplement preset candidates.
+const SimilarArtistEngine = {
+  _simCache: {},   // artistName → [similarNames]
+
+  async _similar(artist) {
+    if (this._simCache[artist]) return this._simCache[artist];
+    try {
+      const qs = new URLSearchParams({
+        method: 'artist.getSimilar', artist,
+        api_key: LASTFM_KEY, format: 'json', limit: '8', autocorrect: '1'
+      });
+      const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+      if (!r.ok) return [];
+      const d = await r.json();
+      const names = (d.similarartists?.artist || []).slice(0, 8).map(a => a.name);
+      this._simCache[artist] = names;
+      return names;
+    } catch { return []; }
+  },
+
+  // Runs in background — finds similar-artist tracks and pushes into queue.
+  // Called after Queue.refill() when the profile is established.
+  async fillQueue(maxAdd = 12) {
+    if (S.profileTotal < 3 || S.myLiked.length < 2) return;
+
+    // Top 3 liked artists by frequency in library
+    const counts = {};
+    S.myLiked.forEach(t => { counts[t.a] = (counts[t.a] || 0) + 1; });
+    const topArtists = Object.entries(counts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([a]) => a);
+
+    const likedSet = new Set(S.myLiked.map(t => t.a.toLowerCase().trim()));
+    const simSet   = new Set();
+
+    for (const artist of topArtists) {
+      await sleep(220);
+      const similar = await this._similar(artist);
+      similar.forEach(s => {
+        if (!likedSet.has(s.toLowerCase().trim())) simSet.add(s);
+      });
+    }
+
+    let added = 0;
+    for (const artist of [...simSet].slice(0, 8)) {
+      if (added >= maxAdd) break;
+      await sleep(400);
+      try {
+        // Search Discogs by artist name, biased toward well-regarded releases
+        const qs = new URLSearchParams({
+          type: 'release', artist,
+          per_page: '10', page: String(Math.ceil(Math.random() * 4) + 1),
+          sort: 'want', sort_order: 'desc'
+        });
+        if (S.forcedCountry) qs.set('country', S.forcedCountry);
+        const r = await discogsFetch(`${DISCOGS_BASE}/database/search?${qs}`);
+        if (!r.ok) continue;
+        const releases = (await r.json()).results || [];
+        const valid = releases
+          .filter(rel => { const h = rel.community?.have || 0; return h >= 5 && h < DISCOGS_HAVE_MAX; })
+          .slice(0, 2);
+
+        for (const rel of valid) {
+          if (added >= maxAdd) break;
+          await sleep(400);
+          try {
+            const dr = await discogsFetch(`${DISCOGS_BASE}/releases/${rel.id}`);
+            if (!dr.ok) continue;
+            const detail    = await dr.json();
+            const relAlbum  = detail.title || '';
+            const relYear   = String(detail.year || '').slice(0, 4);
+            const relArtist = detail.artists?.[0]?.name?.replace(/s*(d+)$/, '') || artist;
+
+            const tracklist = (detail.tracklist || [])
+              .filter(t => t.type_ !== 'heading' && t.title?.trim())
+              .sort(() => Math.random() - 0.5)
+              .slice(0, 2);
+
+            for (const track of tracklist) {
+              if (added >= maxAdd) break;
+              const ta  = track.artists?.[0]?.name?.replace(/s*(d+)$/, '') || relArtist;
+              const key = `${ta}|${track.title}`;
+              if (DiscogsEngine._cache[key] === null) continue;
+              let cached = DiscogsEngine._cache[key];
+              if (!cached) {
+                await sleep(140);
+                const found = await API.search(`${track.title} ${ta}`, null);
+                if (found?.id) {
+                  cached = {
+                    id:   found.id,
+                    art:  tidalCover(found.album?.cover) || null,
+                    d:    (found.duration || 0) * 1000,
+                    isrc: found.isrc || '',
+                    al:   found.album?.title || relAlbum,
+                    y:    (found.album?.releaseDate || relYear || '').slice(0, 4),
+                  };
+                  DiscogsEngine._cache[key] = cached;
+                } else { DiscogsEngine._cache[key] = null; continue; }
+              }
+              if (!cached) continue;
+              const t = { tidalId: cached.id };
+              if (hasSeen(t) || isLiked(t) || S.queue.some(q => q.tidalId === cached.id)) continue;
+
+              S.queue.push({
+                tidalId: cached.id, t: track.title, a: ta,
+                al: cached.al || relAlbum, y: cached.y || relYear, art: cached.art,
+                pre: null, d: cached.d, isrc: cached.isrc,
+                pop: 0, sid: null, source: 'discogs',
+                _styles:  detail.styles  || [],
+                _genres:  detail.genres  || [],
+                _country: detail.country || null,
+                _labels:  (detail.labels || []).slice(0, 3).map(l => l.name || ''),
+              });
+              added++;
+              if (added % 3 === 0) { updateQueueCounter(); showDiscoverCards(); }
+            }
+          } catch { continue; }
+        }
+      } catch { continue; }
+    }
+    if (added > 0) { updateQueueCounter(); showDiscoverCards(); saveState(); }
+  }
+};
+
 // ─── FEATURE VECTORS ──────────────────────────────────────────────
 // Builds a sparse vector from a track's Discogs metadata + Last.fm tags.
 // Keys: sty: (Discogs style), gen: (genre), tag: (Last.fm), dec: (decade),
@@ -828,7 +962,10 @@ const Scorer = {
       diversity = Math.max(0.1, 1 - maxSim * 0.8);
     }
 
-    const total = affinity * 0.40 + quality * 0.25 + novelty * 0.20 + diversity * 0.15;
+    // Weights adapt: when the profile is mature (>10 actions), trust affinity more
+    const _mature = S.profileTotal > 10;
+    const [_aw, _qw, _nw, _dw] = _mature ? [0.60, 0.20, 0.12, 0.08] : [0.40, 0.25, 0.20, 0.15];
+    const total = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw;
     return { total, affinity, quality, novelty, diversity, vec };
   }
 };
@@ -969,6 +1106,8 @@ const Queue = {
           S.queue.push(...reranked.map(c => c.t));
           updateQueueCounter();
           showDiscoverCards();
+          // In background: add similar-artist tracks from Last.fm → Discogs
+          if (S.profileTotal >= 3) SimilarArtistEngine.fillQueue();
           return;
         }
         // Discogs returned nothing → fall through to Tidal recs
@@ -1556,6 +1695,10 @@ function handleLike(track) {
       S.myLiked.push({ ...track, likedAt: Date.now() });
       Taste.recordLike(track);
       UserProfile.update(track, 'like');
+      // Enrich immediately in background so profile has tag features on next update
+      EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
+        if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
+      }).catch(() => {});
       if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
       saveState();
       updateSidebarStats();
@@ -1577,6 +1720,9 @@ function handleSwipeLike(track) {
     S.myLiked.push({ ...track, likedAt: Date.now() });
     Taste.recordLike(track);
     UserProfile.update(track, 'swipe_like');
+    EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
+      if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
+    }).catch(() => {});
     if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
     saveState();
     updateSidebarStats();
