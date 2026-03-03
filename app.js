@@ -427,12 +427,15 @@ function _profileTopGenreKeys(n = 14) {
 
 // A candidate track must share ≥1 genre/style key with the top profile keys.
 // Guard is inactive until the profile is mature enough (≥5 actions) and has
-// genre signal. Returns true (pass) when in doubt.
+// genre signal. Unenriched tracks (no sty:/gen: data yet) always pass —
+// we can only filter what we actually know about.
 function _passesGenreFilter(track) {
   if (S.profileTotal < 5) return true;
   const topKeys = _profileTopGenreKeys(14);
   if (!topKeys.length) return true;
   const vec = FeatureVec.build(track);
+  const hasGenreData = Object.keys(vec).some(k => k.startsWith('sty:') || k.startsWith('gen:'));
+  if (!hasGenreData) return true; // not yet enriched → let through
   return topKeys.some(k => vec[k] > 0);
 }
 // ─── MD5 (needed for Last.fm API signature) ────────────────────────────────────────────
@@ -1352,8 +1355,12 @@ const Scorer = {
     }
 
     // 6. Discovery bonus — reward genuinely new artists (Plan F)
-    const likedArtistSet = new Set(S.myLiked.map(t => (t.a || '').toLowerCase().trim()));
-    const isNewArtist = !likedArtistSet.has(ak) && ri === -1; // not liked, not recently seen
+    // Cache liked artist set per scoring batch (invalidated when myLiked grows)
+    if (!Scorer._likedArtistCache || Scorer._likedArtistCacheLen !== S.myLiked.length) {
+      Scorer._likedArtistCache = new Set(S.myLiked.map(t => (t.a || '').toLowerCase().trim()));
+      Scorer._likedArtistCacheLen = S.myLiked.length;
+    }
+    const isNewArtist = !Scorer._likedArtistCache.has(ak) && ri === -1;
     const discoveryBonus = isNewArtist && affinity > 0.25 ? 0.15 : 0;
 
     // Weights adapt: when the profile is mature (>10 actions), trust affinity more
