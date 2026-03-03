@@ -1535,19 +1535,20 @@ const Queue = {
       // then search Tidal for those tracks. Far more targeted than Tidal's
       // generic recommendation black-box.
       if (!forceSeedId && S.myLiked.length >= 2) {
-        const recentLiked = _weightedSeedSample(5); // Plan A: weighted across full liked set
+        // PATH 1 — track.getSimilar on weighted sample of liked tracks
+        const recentLiked = _weightedSeedSample(7); // Plan A: weighted across full liked set
         for (const liked of recentLiked) {
           await sleep(200);
           try {
             const qs = new URLSearchParams({
               method: 'track.getSimilar', artist: liked.a, track: liked.t,
-              api_key: LASTFM_KEY, format: 'json', limit: '6', autocorrect: '1'
+              api_key: LASTFM_KEY, format: 'json', limit: '8', autocorrect: '1'
             });
             const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
             if (!r.ok) continue;
             const d = await r.json();
             const similar = d.similartracks?.track || [];
-            for (const st of similar.slice(0, 4)) {
+            for (const st of similar.slice(0, 5)) {
               await sleep(160);
               const artistName = typeof st.artist === 'string'
                 ? st.artist : (st.artist?.name || '');
@@ -1562,6 +1563,51 @@ const Queue = {
             }
           } catch { continue; }
         }
+
+        // PATH 2 — artist.getSimilar on top liked artists (full collection aggregated)
+        // S.taste.artists counts likes per artist → top artists = core of taste
+        const topLikedArtists = Object.entries(S.taste.artists || {})
+          .sort((a, b) => b[1].liked - a[1].liked)
+          .slice(0, 4)
+          .map(([a]) => a);
+        for (const artist of topLikedArtists) {
+          await sleep(200);
+          try {
+            const qs = new URLSearchParams({
+              method: 'artist.getSimilar', artist,
+              api_key: LASTFM_KEY, format: 'json', limit: '6', autocorrect: '1'
+            });
+            const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+            if (!r.ok) continue;
+            const d = await r.json();
+            const simArtists = d.similarartists?.artist || [];
+            for (const sa of simArtists.slice(0, 3)) {
+              await sleep(160);
+              // Get top track by this similar artist from Last.fm, then find on Tidal
+              try {
+                const tqs = new URLSearchParams({
+                  method: 'artist.getTopTracks', artist: sa.name,
+                  api_key: LASTFM_KEY, format: 'json', limit: '3', autocorrect: '1'
+                });
+                const tr = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${tqs}`, API_TIMEOUT);
+                if (!tr.ok) continue;
+                const td = await tr.json();
+                const topTracks = td.toptracks?.track || [];
+                for (const tt of topTracks.slice(0, 2)) {
+                  await sleep(150);
+                  const found = await API.search(`${tt.name} ${sa.name}`, null);
+                  if (!_tidalMatchOk(sa.name, tt.name, found)) continue;
+                  const t = fromTidal(found);
+                  if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
+                  if (t.pop > RARE_POP_MAX) continue;
+                  if (!_passesGenreFilter(t)) continue;
+                  t._src = 'lfm_artist';
+                  newTracks.push(t);
+                }
+              } catch { continue; }
+            }
+          } catch { continue; }
+        }
       }
 
       // ── SUPPLEMENT / FALLBACK: Tidal recommendations ───────────────
@@ -1569,7 +1615,7 @@ const Queue = {
       if (forceSeedId) {
         seedIds = [forceSeedId];
       } else {
-        seedIds = await this._likedSeeds(3);
+        seedIds = await this._likedSeeds(5);
         if (!seedIds.length) seedIds = await this._catalogSeeds(2);
       }
 
