@@ -1127,7 +1127,7 @@ const LastFMEngine = {
   async connect(secret, username, password) {
     if (!secret || !username || !password) return { ok: false, msg: 'Tutti i campi sono obbligatori' };
     try {
-      const params = { api_key: LASTFM_KEY, method: 'auth.getMobileSession', password, username };
+      const params = { api_key: LASTFM_KEY, method: 'auth.getMobileSession', password: _md5(password), username };
       const sig = _lfmSig(params, secret);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       const r = await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
