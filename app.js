@@ -1023,6 +1023,7 @@ const Player = {
     a.addEventListener('pause', () => this._onStateChange(false));
     a.addEventListener('error', () => this._onError());
     a.addEventListener('canplay', () => { if (S.isPlaying) a.play().catch(()=>{}); });
+    initMediaSessionHandlers();
   },
 
   async play(track) {
@@ -1072,6 +1073,7 @@ const Player = {
     updatePlayerIsPreview();
     updatePlayPauseIcons();
     updateLikeBtn();
+    updateMediaSession(track);
 
     // Load lyrics if tidal and full player open
     if (S.fullPlayerOpen && track.tidalId) {
@@ -1175,6 +1177,9 @@ const Player = {
     updatePlayPauseIcons();
     const ind = $('playing-indicator');
     if (ind) ind.classList.toggle('visible', playing);
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+    }
   },
 
   _onError() {
@@ -1616,6 +1621,30 @@ function advanceQueue() {
     renderCardStack();
     showDiscoverCards();
   }
+}
+
+// ─── MEDIA SESSION (lock screen widget) ───────────────────────────
+function updateMediaSession(track) {
+  if (!('mediaSession' in navigator) || !track) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title:   track.t  || '',
+    artist:  track.a  || '',
+    album:   track.al || '',
+    artwork: track.art ? [
+      { src: track.art, sizes: '640x640', type: 'image/jpeg' }
+    ] : []
+  });
+}
+
+function initMediaSessionHandlers() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.setActionHandler('play',          () => { S.audio.play().catch(()=>{}); });
+  navigator.mediaSession.setActionHandler('pause',         () => { S.audio.pause(); });
+  navigator.mediaSession.setActionHandler('nexttrack',     () => Player.next());
+  navigator.mediaSession.setActionHandler('previoustrack', () => Player.prev());
+  navigator.mediaSession.setActionHandler('seekto', e => {
+    if (e.seekTime != null) S.audio.currentTime = e.seekTime;
+  });
 }
 
 // ─── PLAYER UI ────────────────────────────────────────────────────
