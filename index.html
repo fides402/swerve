@@ -343,7 +343,29 @@
     }
     .action-btn.like.liked:hover { background: #17a348; }
 
-    /* ── EXPORT BTN ── */
+    /* ── LIBRARY HEADER: title row + search row ── */
+    .lib-header-top {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .lib-search-full { width: 100%; margin-top: 12px; }
+    .lib-io-btns { display: flex; gap: 8px; flex-shrink: 0; }
+    .lib-io-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 50px;
+      font-size: 12px; font-weight: 600;
+      background: var(--surface2); color: var(--text2);
+      border: 1px solid var(--border);
+      transition: var(--transition); white-space: nowrap;
+    }
+    .lib-io-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .lib-io-btn:hover { background: var(--surface3); color: var(--text); }
+    @media (max-width: 520px) {
+      .lib-io-btn { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 50%; }
+      .lib-io-label { display: none; }
+      .lib-search-full { margin-top: 10px; }
+    }
+
+    /* ── EXPORT BTN (legacy) ── */
     .btn-export {
       padding: 8px 16px; border-radius: 50px;
       font-size: 13px; font-weight: 600;
@@ -1281,24 +1303,26 @@
     <!-- LIBRARY VIEW -->
     <section id="view-library" class="view">
       <div class="view-header">
-        <div>
-          <h1>Libreria</h1>
-          <div class="view-header-sub" id="library-count">Caricamento…</div>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <div class="search-bar">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input id="library-search" type="search" placeholder="Cerca brano, artista…">
+        <div class="lib-header-top">
+          <div>
+            <h1>Libreria</h1>
+            <div class="view-header-sub" id="library-count">Caricamento…</div>
           </div>
-          <button id="btn-export-json" class="btn-export" title="Esporta libreria in JSON">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;display:inline;margin-right:4px;vertical-align:-2px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Esporta
-          </button>
-          <button id="btn-import-json" class="btn-export" title="Importa libreria da JSON">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;display:inline;margin-right:4px;vertical-align:-2px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Importa
-          </button>
-          <input type="file" id="import-json-input" accept=".json" style="display:none">
+          <div class="lib-io-btns">
+            <button id="btn-export-json" class="lib-io-btn" title="Esporta libreria in JSON">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span class="lib-io-label">Esporta</span>
+            </button>
+            <button id="btn-import-json" class="lib-io-btn" title="Importa libreria da JSON">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span class="lib-io-label">Importa</span>
+            </button>
+            <input type="file" id="import-json-input" accept=".json" style="display:none">
+          </div>
+        </div>
+        <div class="search-bar lib-search-full">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="library-search" type="search" placeholder="Cerca brano, artista…">
         </div>
       </div>
       <div class="library-filters">
