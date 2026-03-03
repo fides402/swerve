@@ -340,6 +340,27 @@ function randPick(arr, n = 1) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Validate that a Tidal search result actually corresponds to the expected track.
+// Prevents "title collision" where a popular song with a common title steals
+// the slot that should belong to an obscure Discogs release.
+// Accept if ≥ 40% of the expected title's content words appear in the found title.
+function _tidalMatchOk(expArtist, expTitle, found) {
+  if (!found?.id) return false;
+  const norm = s => (s || '').toLowerCase().replace(/[^ws]/g, ' ').trim();
+  const tok  = s => norm(s).split(/s+/).filter(w => w.length > 2);
+  const expT   = tok(expTitle);
+  const foundT = new Set(tok(found.title || ''));
+  if (!expT.length) return true; // single-word title, can't reject
+  const hits = expT.filter(w => foundT.has(w)).length;
+  if (hits / expT.length >= 0.40) return true;
+  // Secondary check: artist match as fallback (catches "Title (Remaster)" variants)
+  const expA   = tok(expArtist);
+  const foundA = new Set(tok(found.artist?.name || found.artists?.map(a => a.name).join(' ') || ''));
+  const aHits  = expA.filter(w => foundA.has(w)).length;
+  return expA.length > 0 && aHits / expA.length >= 0.5;
+}
+
+
 function fetchWithTimeout(url, ms = API_TIMEOUT) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), ms);
@@ -611,7 +632,7 @@ const DiscogsEngine = {
               await sleep(130);
               const q     = artist ? `${track.title} ${artist}` : track.title;
               const found = await API.search(q, null);
-              if (found?.id) {
+              if (found?.id && _tidalMatchOk(artist, track.title, found)) {
                 cached = {
                   id:   found.id,
                   art:  tidalCover(found.album?.cover) || null,
@@ -799,6 +820,18 @@ const SimilarArtistEngine = {
             const dr = await discogsFetch(`${DISCOGS_BASE}/releases/${rel.id}`);
             if (!dr.ok) continue;
             const detail    = await dr.json();
+            // Style guardrail: once the profile is mature, only accept releases
+            // whose genres/styles overlap with the user's top profile dimensions.
+            if (S.profileTotal >= 5) {
+              const relStyles = [...(detail.styles || []), ...(detail.genres || [])]
+                .map(s => s.toLowerCase().trim());
+              const profStyles = Object.keys(UserProfile.get())
+                .filter(k => k.startsWith('sty:') || k.startsWith('gen:'))
+                .map(k => k.slice(4));
+              if (profStyles.length > 0 && !relStyles.some(rs =>
+                  profStyles.some(ps => rs.includes(ps) || ps.includes(rs))))
+                continue; // wrong genre — skip this release
+            }
             const relAlbum  = detail.title || '';
             const relYear   = String(detail.year || '').slice(0, 4);
             const relArtist = detail.artists?.[0]?.name?.replace(/s*(d+)$/, '') || artist;
@@ -817,7 +850,7 @@ const SimilarArtistEngine = {
               if (!cached) {
                 await sleep(140);
                 const found = await API.search(`${track.title} ${ta}`, null);
-                if (found?.id) {
+                if (found?.id && _tidalMatchOk(ta, track.title, found)) {
                   cached = {
                     id:   found.id,
                     art:  tidalCover(found.album?.cover) || null,
@@ -1113,22 +1146,57 @@ const Queue = {
         // Discogs returned nothing → fall through to Tidal recs
       }
 
-      // ── GENERAL / FORCE-SEED MODE: Tidal recommendations ──────────
+      // ── GENERAL / FORCE-SEED MODE ─────────────────────────────────
       updateSeedInfo(forceSeedId && S.sessionSeedTrack
         ? `Basato su: ${S.sessionSeedTrack.t}`
         : 'In base ai tuoi gusti');
 
+      const newTracks = [];
+
+      // ── PRIMARY (free general mode): Last.fm track.getSimilar ──────
+      // For each recently liked track, ask Last.fm "what is similar?"
+      // then search Tidal for those tracks. Far more targeted than Tidal's
+      // generic recommendation black-box.
+      if (!forceSeedId && S.myLiked.length >= 2) {
+        const recentLiked = S.myLiked.slice(-8).slice(0, 5);
+        for (const liked of recentLiked) {
+          await sleep(200);
+          try {
+            const qs = new URLSearchParams({
+              method: 'track.getSimilar', artist: liked.a, track: liked.t,
+              api_key: LASTFM_KEY, format: 'json', limit: '6', autocorrect: '1'
+            });
+            const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+            if (!r.ok) continue;
+            const d = await r.json();
+            const similar = d.similartracks?.track || [];
+            for (const st of similar.slice(0, 4)) {
+              await sleep(160);
+              const artistName = typeof st.artist === 'string'
+                ? st.artist : (st.artist?.name || '');
+              const found = await API.search(`${st.name} ${artistName}`, null);
+              if (!_tidalMatchOk(artistName, st.name, found)) continue;
+              const t = fromTidal(found);
+              if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
+              if (t.pop > RARE_POP_MAX) continue;
+              newTracks.push(t);
+            }
+          } catch { continue; }
+        }
+      }
+
+      // ── SUPPLEMENT / FALLBACK: Tidal recommendations ───────────────
       let seedIds = [];
       if (forceSeedId) {
         seedIds = [forceSeedId];
       } else {
-        seedIds = await this._likedSeeds(5);
-        if (!seedIds.length) seedIds = await this._catalogSeeds(3);
+        seedIds = await this._likedSeeds(3);
+        if (!seedIds.length) seedIds = await this._catalogSeeds(2);
       }
 
-      if (!seedIds.length) { showDiscoverEmpty(); return; }
+      if (!forceSeedId && !newTracks.length && !seedIds.length) { showDiscoverEmpty(); return; }
+      if (forceSeedId && !seedIds.length) { showDiscoverEmpty(); return; }
 
-      const newTracks = [];
       for (const id of seedIds) {
         await sleep(150);
         const recs = await API.getRecommendations(id);
