@@ -2374,7 +2374,86 @@ function initEvents() {
   $('player-title').addEventListener('click', () => openFullPlayer());
   $('player-art').addEventListener('click', () => openFullPlayer());
 
-  // Library
+  // Library — export JSON
+  $('btn-export-json').addEventListener('click', () => {
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      tracks: S.myLiked.map(t => ({
+        tidalId:  t.tidalId || null,
+        isrc:     t.isrc    || null,
+        title:    t.t,
+        artist:   t.a,
+        album:    t.al      || null,
+        year:     t.y       || null,
+        art:      t.art     || null,
+        duration: t.d       || null,
+        source:   t._src || t.source || 'liked',
+        likedAt:  t.likedAt || null,
+      }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `swerve-library-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`📦 Esportati ${data.tracks.length} brani`, 'like');
+  });
+
+  // Library — import JSON
+  $('btn-import-json').addEventListener('click', () => $('import-json-input').click());
+  $('import-json-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const incoming = Array.isArray(data) ? data : (data.tracks || []);
+      if (!incoming.length) { toast('File vuoto o formato non valido', 'skip'); return; }
+
+      // Build dedup key-set from existing library
+      const keys = new Set([
+        ...S.myLiked.map(t => t.tidalId).filter(Boolean),
+        ...S.myLiked.map(t => t.isrc).filter(Boolean),
+        ...S.myLiked.map(t => `${t.t}|${t.a}`),
+      ]);
+      let added = 0;
+      for (const t of incoming) {
+        const tid = t.tidalId || t.id || null;
+        const titleKey = `${t.title || t.t || ''}|${t.artist || t.a || ''}`;
+        if (tid && keys.has(tid)) continue;
+        if (t.isrc && keys.has(t.isrc)) continue;
+        if (keys.has(titleKey)) continue;
+        S.myLiked.push({
+          tidalId: tid,
+          isrc:    t.isrc     || null,
+          t:       t.title    || t.t  || '',
+          a:       t.artist   || t.a  || '',
+          al:      t.album    || t.al || '',
+          y:       t.year     || t.y  || '',
+          art:     t.art      || null,
+          d:       t.duration || t.d  || 0,
+          _src:    'discovered',
+          source:  t.source   || 'imported',
+          likedAt: t.likedAt  || Date.now(),
+        });
+        if (tid) keys.add(tid);
+        if (t.isrc) keys.add(t.isrc);
+        keys.add(titleKey);
+        added++;
+      }
+      saveState();
+      updateSidebarStats();
+      renderLibrary(S.libraryFilter);
+      toast(`✅ Importati ${added} brani (${incoming.length - added} già presenti)`, 'like');
+    } catch {
+      toast('Errore nel file JSON — controlla il formato', 'skip');
+    }
+  });
+
   $('library-search').addEventListener('input', (e) => {
     renderLibrary(S.libraryFilter, e.target.value);
   });
