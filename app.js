@@ -15,6 +15,10 @@ const QUEUE_TARGET    = 60;
 const API_TIMEOUT     = 9000;
 const RARE_POP_MAX    = 40;  // filter out mainstream hits (pop > this)
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
+const LASTFM_KEY      = 'acd1fbf80c19d2febdf1bf378293eedf';
+const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
+const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
+const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
 
 // ─── CATALOG (from CSV) ───────────────────────────────────────────
 const CATALOG = JSON.parse(document.getElementById('catalog-data').textContent);
@@ -166,9 +170,17 @@ const S = {
   discogsWeights: {},
   lastSkipped: null,   // session-only: track to recover with undo
 
-  // Rolling artist cooldown (persisted): artists seen recently won't recur
-  // until ARTIST_COOLDOWN other unique artists have appeared first.
-  recentArtists: [],   // spotifyId → tidalId
+  // Rolling artist cooldown (persisted)
+  recentArtists: [],
+
+  // ── ENRICHMENT & FEATURE MODEL (persisted) ──────────────────────
+  // Per-track enrichment: 'artist|title' → { tags:[{n,w}], ts }
+  enrichCache: {},
+  // Sparse user profile vector built from liked/skipped feature vectors
+  profileVector: {},   // { 'sty:soundtrack': 1.4, 'tag:rare groove': 0.9, … }
+  profileTotal:  0,    // sum of |weights| added (for normalization)
+  // Session-only: timestamp when current player track started (implicit signals)
+  listenStart: 0,
 
   // Player
   audio: new Audio(),
@@ -194,16 +206,29 @@ const S = {
 // ─── STORAGE ──────────────────────────────────────────────────────
 function saveState() {
   try {
+    // Prune enrichCache: keep only entries < 7 days old, max 2000
+    const now = Date.now();
+    const enrichPruned = Object.fromEntries(
+      Object.entries(S.enrichCache)
+        .filter(([, v]) => now - (v.ts || 0) < 7 * 86400_000)
+        .slice(-2000)
+    );
     localStorage.setItem('swerve_v2', JSON.stringify({
-      myLiked: S.myLiked,
-      mySkipped: [...S.mySkipped],
-      playlists: S.playlists,
-      taste: S.taste,
-      tidalCache: S.tidalCache,
-      seenIds: [...S.seenIds].slice(-500), // keep last 500
-      volume: S.volume,
-      shuffle: S.shuffle,
-      repeat: S.repeat,
+      myLiked:        S.myLiked,
+      mySkipped:      [...S.mySkipped],
+      playlists:      S.playlists,
+      taste:          S.taste,
+      tidalCache:     S.tidalCache,
+      seenIds:        [...S.seenIds].slice(-500),
+      volume:         S.volume,
+      shuffle:        S.shuffle,
+      repeat:         S.repeat,
+      recentArtists:  S.recentArtists,
+      discogsWeights: S.discogsWeights,
+      presetSeedCache:S.presetSeedCache,
+      enrichCache:    enrichPruned,
+      profileVector:  S.profileVector,
+      profileTotal:   S.profileTotal,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -219,6 +244,9 @@ function loadState() {
     S.presetSeedCache = d.presetSeedCache || {};
     S.discogsWeights  = d.discogsWeights  || {};
     S.recentArtists   = d.recentArtists   || [];
+    S.enrichCache     = d.enrichCache     || {};
+    S.profileVector   = d.profileVector   || {};
+    S.profileTotal    = d.profileTotal    || 0;
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -542,18 +570,23 @@ const DiscogsEngine = {
             artistCount[artistKey] = (artistCount[artistKey] || 0) + 1;
 
             tracks.push({
-              tidalId: cached.id,
-              t:    track.title,
-              a:    artist,
-              al:   cached.al || relAlbum,
-              y:    cached.y  || relYear,
-              art:  cached.art,
-              pre:  null,
-              d:    cached.d,
-              isrc: cached.isrc,
-              pop:  0,
-              sid:  null,
-              source: 'discogs'
+              tidalId:  cached.id,
+              t:        track.title,
+              a:        artist,
+              al:       cached.al || relAlbum,
+              y:        cached.y  || relYear,
+              art:      cached.art,
+              pre:      null,
+              d:        cached.d,
+              isrc:     cached.isrc,
+              pop:      0,
+              sid:      null,
+              source:   'discogs',
+              // Discogs metadata — used by FeatureVec for scoring & profile updates
+              _styles:  detail.styles  || [],
+              _genres:  detail.genres  || [],
+              _country: detail.country || cfg.country || null,
+              _labels:  (detail.labels || []).slice(0, 3).map(l => l.name || ''),
             });
 
             // Rolling artist cooldown — move to front so the 60-slot window is accurate
@@ -567,6 +600,197 @@ const DiscogsEngine = {
     return tracks;
   }
 };
+
+// ─── ENRICH ENGINE ────────────────────────────────────────────────
+// Fetches Last.fm top tags per track; caches in S.enrichCache (persisted).
+// Tags like "rare groove", "spiritual jazz", "library music" are the
+// highest-signal features for this taste profile.
+const EnrichEngine = {
+
+  // Fetch Last.fm top tags for artist+title → [{n, w}]
+  async _lfmTags(artist, title) {
+    try {
+      const SKIP = new Set(['seen live','favorites','favourite','love','00s','10s','20s','mp3']);
+      const qs = new URLSearchParams({
+        method: 'track.getTopTags', artist, track: title,
+        api_key: LASTFM_KEY, format: 'json', autocorrect: '1'
+      });
+      const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+      if (!r.ok) return [];
+      const json = await r.json();
+      return (json.toptags?.tag || [])
+        .filter(t => t.name && !SKIP.has(t.name.toLowerCase()) && parseInt(t.count) > 0)
+        .slice(0, 12)
+        .map(t => ({ n: t.name.toLowerCase(), w: Math.min(parseInt(t.count) / 100, 1) || 0.1 }));
+    } catch { return []; }
+  },
+
+  // Get (or fetch + cache) enrichment for a track
+  async getFeatures(artist, title) {
+    const key = `${(artist||'').toLowerCase().trim()}|${(title||'').toLowerCase().trim()}`;
+    if (S.enrichCache[key]) return S.enrichCache[key];
+    const tags = await this._lfmTags(artist, title);
+    const entry = { tags, ts: Date.now() };
+    S.enrichCache[key] = entry;
+    return entry;
+  },
+
+  // Background enrichment: silently enrich unprocessed liked tracks in small batches
+  async enrichLikedBg() {
+    const BATCH = 6;
+    const todo = [...S.myLiked, ...CATALOG.slice(0, 60)]
+      .filter(t => {
+        const k = `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+        return !S.enrichCache[k];
+      })
+      .slice(0, BATCH);
+    for (const t of todo) {
+      await sleep(450); // ~2 req/s — well within Last.fm 5 req/s limit
+      await this.getFeatures(t.a || '', t.t || '');
+    }
+    if (todo.length) {
+      saveState();
+      UserProfile.seedFromLiked(); // update profile as new enrichments arrive
+    }
+    // Schedule next batch if more remain
+    const remaining = [...S.myLiked, ...CATALOG.slice(0, 60)]
+      .filter(t => !S.enrichCache[`${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`]);
+    if (remaining.length) setTimeout(() => EnrichEngine.enrichLikedBg(), 8000);
+  }
+};
+
+// ─── FEATURE VECTORS ──────────────────────────────────────────────
+// Builds a sparse vector from a track's Discogs metadata + Last.fm tags.
+// Keys: sty: (Discogs style), gen: (genre), tag: (Last.fm), dec: (decade),
+//        ctr: (country), lbl: (label).
+const FeatureVec = {
+  build(track) {
+    const vec = {};
+    const add = (k, w) => { vec[k] = (vec[k] || 0) + w; };
+
+    // Discogs metadata attached to track by DiscogsEngine
+    (track._styles  || []).forEach(s => add(`sty:${s.toLowerCase()}`, 2.0));
+    (track._genres  || []).forEach(g => add(`gen:${g.toLowerCase()}`, 1.5));
+    (track._labels  || []).forEach(l => add(`lbl:${l.toLowerCase()}`, 0.8));
+    if (track._country) add(`ctr:${track._country.toLowerCase()}`, 0.6);
+
+    // Last.fm tags from enrichCache
+    const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    (S.enrichCache[ck]?.tags || []).forEach(t => add(`tag:${t.n}`, t.w * 1.5));
+
+    // Decade
+    const y = parseInt(track.y);
+    if (y > 1900) add(`dec:${Math.floor(y / 10) * 10}`, 1.0);
+
+    return vec;
+  },
+
+  // Cosine similarity between two sparse vectors → [0, 1]
+  sim(v1, v2) {
+    let dot = 0, m1 = 0, m2 = 0;
+    for (const k in v1) { m1 += v1[k] ** 2; if (v2[k]) dot += v1[k] * v2[k]; }
+    for (const k in v2)   m2 += v2[k] ** 2;
+    const d = Math.sqrt(m1) * Math.sqrt(m2);
+    return d > 0 ? dot / d : 0;
+  }
+};
+
+// ─── USER PROFILE (online learning) ───────────────────────────────
+// Maintains a sparse feature vector updated in real-time on every swipe/listen.
+const UserProfile = {
+  _W: { like: 1.0, swipe_like: 1.2, playlist: 2.0,
+        listen_long: 0.5, skip_fast: -0.5, dislike: -0.8 },
+
+  update(track, action) {
+    const w = this._W[action];
+    if (!w) return;
+    const vec = FeatureVec.build(track);
+    for (const k in vec) S.profileVector[k] = (S.profileVector[k] || 0) + w * vec[k];
+    S.profileTotal = (S.profileTotal || 0) + Math.abs(w);
+  },
+
+  // Normalized profile (for scoring)
+  get() {
+    if (!S.profileTotal) return {};
+    const t = S.profileTotal, v = {};
+    for (const k in S.profileVector) if (S.profileVector[k] !== 0) v[k] = S.profileVector[k] / t;
+    return v;
+  },
+
+  // Seed profile from already-enriched liked tracks (runs at startup + after each enrichBg batch)
+  seedFromLiked() {
+    let n = 0;
+    for (const t of S.myLiked) {
+      const k = `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+      if (!S.enrichCache[k]) continue;
+      this.update(t, 'like');
+      n++;
+    }
+    if (n) saveState();
+    return n;
+  }
+};
+
+// ─── SCORER ───────────────────────────────────────────────────────
+// Multi-factor scoring: affinity (40%) + quality (25%) + novelty (20%) + diversity (15%).
+const Scorer = {
+  RARE_TAGS: new Set([
+    'rare groove','library music','spiritual jazz','jazz-funk','soul-jazz',
+    'bossa nova','afrobeat','afro soul','ethio-jazz','free jazz','avant-garde',
+    'modal jazz','post-bop','film music','soundtrack','library','easy listening',
+    'psych','psychedelic soul','deep funk','funk','giallo','spaghetti western',
+    'krautrock','groove','rare soul','northern soul','acid jazz'
+  ]),
+
+  score(track, opts = {}) {
+    const profile = UserProfile.get();
+    const vec     = FeatureVec.build(track);
+    const hasProf = Object.keys(profile).length > 3;
+
+    // 1. Affinity — how well the track matches your taste vector
+    const affinity = hasProf ? FeatureVec.sim(profile, vec) : 0.5;
+
+    // 2. Quality — rare-grade signals from Last.fm tags
+    const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const rareCount = (S.enrichCache[ck]?.tags || []).filter(t => this.RARE_TAGS.has(t.n)).length;
+    const quality   = Math.min(0.3 + rareCount * 0.12, 1.0);
+
+    // 3. Novelty — penalise recently surfaced artists
+    const ak  = (track.a || '').toLowerCase().trim();
+    const ri  = S.recentArtists.indexOf(ak);
+    const novelty = ri === -1 ? 1.0 : Math.max(0.1, 1 - (ri / 60) * 0.9);
+
+    // 4. Diversity — distance from the tracks already in the current queue slice
+    let diversity = 1.0;
+    if (opts.recentVecs?.length) {
+      const maxSim = Math.max(...opts.recentVecs.map(rv => FeatureVec.sim(vec, rv)));
+      diversity = Math.max(0.1, 1 - maxSim * 0.8);
+    }
+
+    const total = affinity * 0.40 + quality * 0.25 + novelty * 0.20 + diversity * 0.15;
+    return { total, affinity, quality, novelty, diversity, vec };
+  }
+};
+
+// Maximal Marginal Relevance — diversify a scored candidate list.
+// λ = 0.7: weight 70% relevance, 30% distance from already-picked.
+function mmrRerank(scored, n, lambda = 0.7) {
+  if (scored.length <= n) return scored;
+  const selected = [], remaining = [...scored];
+  while (selected.length < n && remaining.length) {
+    let bestIdx = 0, bestVal = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const relevance = remaining[i].sc.total;
+      const maxSim = selected.length
+        ? Math.max(...selected.map(s => FeatureVec.sim(remaining[i].sc.vec, s.sc.vec)))
+        : 0;
+      const mmrVal = lambda * relevance - (1 - lambda) * maxSim;
+      if (mmrVal > bestVal) { bestVal = mmrVal; bestIdx = i; }
+    }
+    selected.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return selected;
+}
 
 // ─── TASTE ENGINE ─────────────────────────────────────────────────
 const Taste = {
@@ -670,13 +894,18 @@ const Queue = {
         const discogsTracks = await DiscogsEngine.getTracks(S.activePreset, 30);
         if (discogsTracks.length >= 2) {
           const seenSet = new Set();
-          const unique = discogsTracks.filter(t => {
+          const candidates = discogsTracks.filter(t => {
             if (hasSeen(t) || isLiked(t)) return false;
             if (seenSet.has(t.tidalId)) return false;
             seenSet.add(t.tidalId);
             return true;
           });
-          S.queue.push(...unique);
+          // Score + MMR-rerank for variety and taste alignment
+          const recentVecs = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
+          const scored = candidates.map(t => ({ t, sc: Scorer.score(t, { recentVecs }) }));
+          scored.sort((a, b) => b.sc.total - a.sc.total);
+          const reranked = mmrRerank(scored, Math.min(30, scored.length));
+          S.queue.push(...reranked.map(c => c.t));
           updateQueueCounter();
           showDiscoverCards();
           return;
@@ -711,9 +940,13 @@ const Queue = {
         }
       }
 
-      newTracks.sort((a, b) =>
-        (Taste.score(b) - Taste.score(a)) + (Math.random() - 0.5) * 3
-      );
+      // Multi-factor sort: Scorer (affinity+quality+novelty) + small random jitter
+      const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
+      newTracks.sort((a, b) => {
+        const sa = Scorer.score(a, { recentVecs: recentVecsG }).total;
+        const sb = Scorer.score(b, { recentVecs: recentVecsG }).total;
+        return (sb - sa) + (Math.random() - 0.5) * 0.08;
+      });
 
       const seenSet = new Set();
       const unique = newTracks.filter(t => {
@@ -789,6 +1022,7 @@ const Player = {
   },
 
   async play(track) {
+    S.listenStart = Date.now();
     S.playerTrack = track;
     S.isPreview = false;
     updatePlayerBar(track);
@@ -919,6 +1153,8 @@ const Player = {
   },
 
   _onEnded() {
+    // Full listen = strong implicit like
+    _checkListenSignal(S.playerTrack, true);
     if (S.repeat === 'one') {
       S.audio.currentTime = 0;
       S.audio.play().catch(()=>{});
@@ -1226,6 +1462,22 @@ function playCardPreview(track, btn) {
 
 // ─── LIKE / SKIP HANDLERS ─────────────────────────────────────────
 
+// ── Implicit listen signal ─────────────────────────────────────────
+// Called before every card advance (like / skip / swipe).
+// fullListen = track ended naturally (strongest signal).
+function _checkListenSignal(track, fullListen = false) {
+  if (!track || !S.listenStart) return;
+  const secs = (Date.now() - S.listenStart) / 1000;
+  S.listenStart = 0;
+  if (fullListen || secs >= LISTEN_LONG_SEC) {
+    UserProfile.update(track, 'listen_long');
+    saveState();
+  } else if (secs > 1 && secs < LISTEN_SKIP_SEC) {
+    UserProfile.update(track, 'skip_fast');
+    saveState();
+  }
+}
+
 // Two-stage like: first press = like + stay, second press = advance.
 // Swipe-right uses _advanceLike() which does both in one step.
 function handleLike(track) {
@@ -1233,15 +1485,15 @@ function handleLike(track) {
     // ── FIRST PRESS: add to library, stay on card ──────────────────
     if (!isLiked(track)) {
       S.myLiked.push({ ...track, likedAt: Date.now() });
-      saveState();
       Taste.recordLike(track);
+      UserProfile.update(track, 'like');
       if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
+      saveState();
       updateSidebarStats();
     }
     S.currentCardLiked = true;
     updateCardLikeBtnState();
     toast('❤️  Salvato — premi ancora per avanzare', 'like');
-    // Background fill — never pass forceSeedId in preset mode (would bypass Discogs)
     if (S.queue.length < QUEUE_TARGET) Queue.refill();
   } else {
     // ── SECOND PRESS: advance to next card ────────────────────────
@@ -1251,11 +1503,13 @@ function handleLike(track) {
 
 // Swipe-right: like + advance immediately (one gesture = decisive action)
 function handleSwipeLike(track) {
+  _checkListenSignal(track);
   if (!isLiked(track)) {
     S.myLiked.push({ ...track, likedAt: Date.now() });
-    saveState();
     Taste.recordLike(track);
+    UserProfile.update(track, 'swipe_like');
     if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
+    saveState();
     updateSidebarStats();
     toast('❤️  Aggiunto alla libreria', 'like');
   }
@@ -1263,12 +1517,12 @@ function handleSwipeLike(track) {
 }
 
 function _advanceLike(track) {
+  _checkListenSignal(track);
   S.lastSkipped = null; updateUndoBtn();
   S.currentCardLiked = false;
   markSeen(track);
   S.queue.shift();
   advanceQueue();
-  // In preset mode always use Discogs (no forceSeedId); in general mode seed from liked track
   const isPreset = PRESETS[S.activePreset]?.seeds;
   if (!isPreset && track.tidalId && S.queue.length < QUEUE_TARGET) Queue.refill(track.tidalId);
   else if (S.queue.length < QUEUE_REFILL_AT) Queue.refill();
@@ -1283,9 +1537,12 @@ function updateCardLikeBtnState() {
 }
 
 function handleSkip(track) {
-  S.lastSkipped = track;           // save for undo
+  _checkListenSignal(track);
+  S.lastSkipped = track;
   Taste.recordSkip(track);
+  UserProfile.update(track, 'dislike');
   if (track.source === 'discogs') DiscogsEngine.recordSkip(S.activePreset);
+  saveState();
   markSeen(track);
   S.queue.shift();
 
@@ -2149,9 +2406,16 @@ async function init() {
     seedInitialTaste(picks);
   }
 
+  // Seed user profile from already-enriched liked tracks (fast, sync)
+  UserProfile.seedFromLiked();
+
   // Start filling the discover queue
   showDiscoverLoading();
   await Queue.refill();
+
+  // Background enrichment: fetch Last.fm tags for liked tracks over time.
+  // Runs lazily so it never blocks the UI. Profile improves with each batch.
+  setTimeout(() => EnrichEngine.enrichLikedBg(), 5000);
 }
 
 async function seedInitialTaste(tracks) {
