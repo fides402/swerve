@@ -401,6 +401,49 @@
     }
     .country-item.all-countries { color: var(--text); font-weight: 600; border-bottom: 1px solid var(--border); margin-bottom: 6px; padding-bottom: 14px; }
 
+
+    /* ── SETTINGS VIEW ── */
+    .settings-body {
+      padding: 20px; overflow-y: auto; height: 100%;
+      display: flex; flex-direction: column; gap: 16px; max-width: 540px;
+    }
+    .settings-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+    }
+    .settings-card-info { opacity: 0.7; }
+    .settings-card-header {
+      font-size: 14px; font-weight: 700; display: flex; align-items: center;
+      justify-content: space-between; margin-bottom: 8px;
+    }
+    .settings-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 3px 8px; border-radius: 20px;
+      background: var(--surface3); color: var(--text3);
+    }
+    .settings-badge.connected { background: var(--like-dim); color: var(--like); }
+    .settings-hint {
+      font-size: 12px; color: var(--text2); margin-bottom: 16px; line-height: 1.5;
+    }
+    .settings-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+    .settings-field label { font-size: 11px; font-weight: 600; color: var(--text2); letter-spacing: 0.3px; }
+    .settings-field input {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 9px 12px;
+      font-size: 13px; color: var(--text); width: 100%;
+    }
+    .settings-field input:focus { outline: none; border-color: var(--text3); }
+    .settings-btn {
+      width: 100%; padding: 10px; border-radius: var(--radius-sm);
+      background: var(--accent); color: #000; font-size: 13px; font-weight: 700;
+      cursor: pointer; transition: var(--transition);
+    }
+    .settings-btn:hover { opacity: 0.9; }
+    .settings-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .settings-status { margin-top: 12px; font-size: 12px; color: var(--text2); min-height: 16px; }
+    .settings-status.ok { color: var(--like); }
+    .settings-status.err { color: var(--skip); }
+
     /* ── LIKED STATE on card btn ── */
     .action-btn.like.liked {
       background: var(--like);
@@ -1302,7 +1345,10 @@
         <circle cx="3" cy="18" r="1" fill="currentColor"/>
       </svg>
     </button>
-    <div class="nav-spacer"></div>
+    <button class="nav-btn" data-view="settings" title="Impostazioni">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+  </button>
+  <div class="nav-spacer"></div>
     <div class="stats-pill" id="sidebar-stats">
       <span id="sidebar-like-count">0</span>
       piaciuti
@@ -1598,6 +1644,66 @@
     </div>
   </div>
 </div>
+
+
+    <!-- SETTINGS VIEW -->
+    <section id="view-settings" class="view">
+      <div class="view-header">
+        <h1>Impostazioni</h1>
+      </div>
+      <div class="settings-body">
+
+        <!-- ListenBrainz -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <span>ListenBrainz</span>
+            <span id="lb-badge" class="settings-badge">Non connesso</span>
+          </div>
+          <p class="settings-hint">Scrobbling automatico e raccomandazioni collaborative basate su milioni di ascoltatori. Ottieni il token da <strong>listenbrainz.org/profile/</strong></p>
+          <div class="settings-field">
+            <label>Username</label>
+            <input type="text" id="lb-username" placeholder="il tuo username ListenBrainz" autocomplete="off">
+          </div>
+          <div class="settings-field">
+            <label>Token</label>
+            <input type="password" id="lb-token" placeholder="LB-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+          </div>
+          <button id="btn-lb-connect" class="settings-btn">Connetti</button>
+          <div id="lb-status" class="settings-status"></div>
+        </div>
+
+        <!-- Last.fm Scrobbling -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <span>Last.fm Scrobbling</span>
+            <span id="lfm-badge" class="settings-badge">Non connesso</span>
+          </div>
+          <p class="settings-hint">Scrobble ogni brano ascoltato sul tuo profilo Last.fm. L'API Secret si trova su <strong>last.fm/api/accounts</strong></p>
+          <div class="settings-field">
+            <label>API Secret</label>
+            <input type="password" id="lfm-secret" placeholder="API Secret dell'app Last.fm" autocomplete="off">
+          </div>
+          <div class="settings-field">
+            <label>Username Last.fm</label>
+            <input type="text" id="lfm-username" placeholder="il tuo username" autocomplete="off">
+          </div>
+          <div class="settings-field">
+            <label>Password Last.fm</label>
+            <input type="password" id="lfm-password" placeholder="password (non viene salvata)" autocomplete="off">
+          </div>
+          <button id="btn-lfm-connect" class="settings-btn">Connetti</button>
+          <div id="lfm-status" class="settings-status"></div>
+        </div>
+
+        <!-- MusicBrainz info -->
+        <div class="settings-card settings-card-info">
+          <div class="settings-card-header">MusicBrainz</div>
+          <p class="settings-hint">Enrichment automatico in background — nessuna configurazione. Migliora i metadati (anno originale, paese, label) per un scoring più preciso delle release.</p>
+          <div id="mb-status" class="settings-status"></div>
+        </div>
+
+      </div>
+    </section>
 
 <!-- COUNTRY PICKER -->
 <div id="country-backdrop"></div>

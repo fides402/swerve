@@ -19,6 +19,9 @@ const LASTFM_KEY      = 'acd1fbf80c19d2febdf1bf378293eedf';
 const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
 const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
 const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
+const MB_BASE   = 'https://musicbrainz.org/ws/2';
+const MB_UA     = 'Swerve/1.0 (https://github.com/fides402/swerve)';
+const LB_BASE   = 'https://api.listenbrainz.org/1';
 
 // ─── COUNTRY LIST (for picker) ───────────────────────────────────────────────
 const COUNTRIES = [
@@ -237,6 +240,16 @@ const S = {
   // Stream quality preference (persisted): 'LOW' | 'HIGH' | 'LOSSLESS'
   streamQuality: 'HIGH',
   forcedCountry: null,  // null = use cfg.country; string = override
+  // ── MUSICBRAINZ / LISTENBRAINZ / LASTFM ─────────────────────────
+  mbCache: {},              // 'artist|title' → {mbid, firstRelease, country, label, isOriginal, ts}
+  lbUser: null,             // ListenBrainz username (persisted)
+  lbToken: null,            // ListenBrainz user token (persisted)
+  lbRecQueries: [],         // [{t, a, mbid}] — pre-fetched LB CF recs, used as queue supplement
+  lbRecsTs: 0,              // last LB recs fetch timestamp
+  lbTracks: [],             // resolved Tidal tracks from LB recs (ready to use)
+  lfmSecret: null,          // Last.fm API secret (persisted)
+  lfmSessionKey: null,      // Last.fm session key (persisted, never store password)
+  lfmUsername: null,        // Last.fm username (persisted)
 
   // Player
   audio: new Audio(),
@@ -260,6 +273,15 @@ const S = {
 };
 
 // ─── STORAGE ──────────────────────────────────────────────────────
+function _pruneMbCache(cache) {
+  const now = Date.now();
+  return Object.fromEntries(
+    Object.entries(cache || {})
+      .filter(([, v]) => now - (v.ts || 0) < 30 * 86400_000) // 30-day TTL
+      .slice(-1500)
+  );
+}
+
 function saveState() {
   try {
     // Prune enrichCache: keep only entries < 7 days old, max 2000
@@ -287,6 +309,14 @@ function saveState() {
       profileTotal:   S.profileTotal,
       streamQuality:  S.streamQuality,
       forcedCountry: S.forcedCountry,
+      mbCache:       _pruneMbCache(S.mbCache),
+      lbUser:        S.lbUser,
+      lbToken:       S.lbToken,
+      lbRecsTs:      S.lbRecsTs,
+      lbRecQueries:  S.lbRecQueries,
+      lfmSecret:     S.lfmSecret,
+      lfmSessionKey: S.lfmSessionKey,
+      lfmUsername:   S.lfmUsername,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -307,6 +337,14 @@ function loadState() {
     S.profileTotal    = d.profileTotal    || 0;
     S.streamQuality   = d.streamQuality   || 'HIGH';
     S.forcedCountry  = d.forcedCountry  || null;
+    S.mbCache        = d.mbCache        || {};
+    S.lbUser         = d.lbUser         || null;
+    S.lbToken        = d.lbToken        || null;
+    S.lbRecsTs       = d.lbRecsTs       || 0;
+    S.lbRecQueries   = d.lbRecQueries   || [];
+    S.lfmSecret      = d.lfmSecret      || null;
+    S.lfmSessionKey  = d.lfmSessionKey  || null;
+    S.lfmUsername    = d.lfmUsername    || null;
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -339,6 +377,99 @@ function randPick(arr, n = 1) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ─── MD5 (needed for Last.fm API signature) ────────────────────────────────────────────
+function _md5(input) {
+  const ADD = (x,y) => { const l=(x&0xFFFF)+(y&0xFFFF); return (((x>>16)+(y>>16)+(l>>16))<<16)|(l&0xFFFF); };
+  const ROT = (x,n) => (x<<n)|(x>>>(32-n));
+  const FF  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,(b&c)|(~b&d)),ADD(x,t)),s),b);
+  const GG  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,(b&d)|(c&~d)),ADD(x,t)),s),b);
+  const HH  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,b^c^d),ADD(x,t)),s),b);
+  const II  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,c^(b|~d)),ADD(x,t)),s),b);
+  const str = unescape(encodeURIComponent(input));
+  const m = []; const K = (1<<8)-1;
+  for (let i=0;i<str.length*8;i+=8) m[i>>5]|=(str.charCodeAt(i/8)&K)<<(i%32);
+  m[str.length*8>>5]|=0x80<<((str.length*8)%32);
+  m[(((str.length*8+64)>>>9)<<4)+14]=str.length*8;
+  let [a0,b0,c0,d0]=[1732584193,-271733879,-1732584194,271733878];
+  for (let i=0;i<m.length;i+=16) {
+    let [a,b,c,d]=[a0,b0,c0,d0];
+    a=FF(a,b,c,d,m[i+0],7,-680876936); d=FF(d,a,b,c,m[i+1],12,-389564586); c=FF(c,d,a,b,m[i+2],17,606105819); b=FF(b,c,d,a,m[i+3],22,-1044525330);
+    a=FF(a,b,c,d,m[i+4],7,-176418897); d=FF(d,a,b,c,m[i+5],12,1200080426); c=FF(c,d,a,b,m[i+6],17,-1473231341); b=FF(b,c,d,a,m[i+7],22,-45705983);
+    a=FF(a,b,c,d,m[i+8],7,1770035416); d=FF(d,a,b,c,m[i+9],12,-1958414417); c=FF(c,d,a,b,m[i+10],17,-42063); b=FF(b,c,d,a,m[i+11],22,-1990404162);
+    a=FF(a,b,c,d,m[i+12],7,1804603682); d=FF(d,a,b,c,m[i+13],12,-40341101); c=FF(c,d,a,b,m[i+14],17,-1502002290); b=FF(b,c,d,a,m[i+15],22,1236535329);
+    a=GG(a,b,c,d,m[i+1],5,-165796510); d=GG(d,a,b,c,m[i+6],9,-1069501632); c=GG(c,d,a,b,m[i+11],14,643717713); b=GG(b,c,d,a,m[i+0],20,-373897302);
+    a=GG(a,b,c,d,m[i+5],5,-701558691); d=GG(d,a,b,c,m[i+10],9,38016083); c=GG(c,d,a,b,m[i+15],14,-660478335); b=GG(b,c,d,a,m[i+4],20,-405537848);
+    a=GG(a,b,c,d,m[i+9],5,568446438); d=GG(d,a,b,c,m[i+14],9,-1019803690); c=GG(c,d,a,b,m[i+3],14,-187363961); b=GG(b,c,d,a,m[i+8],20,1163531501);
+    a=GG(a,b,c,d,m[i+13],5,-1444681467); d=GG(d,a,b,c,m[i+2],9,-51403784); c=GG(c,d,a,b,m[i+7],14,1735328473); b=GG(b,c,d,a,m[i+12],20,-1926607734);
+    a=HH(a,b,c,d,m[i+5],4,-378558); d=HH(d,a,b,c,m[i+8],11,-2022574463); c=HH(c,d,a,b,m[i+11],16,1839030562); b=HH(b,c,d,a,m[i+14],23,-35309556);
+    a=HH(a,b,c,d,m[i+1],4,-1530992060); d=HH(d,a,b,c,m[i+4],11,1272893353); c=HH(c,d,a,b,m[i+7],16,-155497632); b=HH(b,c,d,a,m[i+10],23,-1094730640);
+    a=HH(a,b,c,d,m[i+13],4,681279174); d=HH(d,a,b,c,m[i+0],11,-358537222); c=HH(c,d,a,b,m[i+3],16,-722521979); b=HH(b,c,d,a,m[i+6],23,76029189);
+    a=HH(a,b,c,d,m[i+9],4,-640364487); d=HH(d,a,b,c,m[i+12],11,-421815835); c=HH(c,d,a,b,m[i+15],16,530742520); b=HH(b,c,d,a,m[i+2],23,-995338651);
+    a=II(a,b,c,d,m[i+0],6,-198630844); d=II(d,a,b,c,m[i+7],10,1126891415); c=II(c,d,a,b,m[i+14],15,-1416354905); b=II(b,c,d,a,m[i+5],21,-57434055);
+    a=II(a,b,c,d,m[i+12],6,1700485571); d=II(d,a,b,c,m[i+3],10,-1894986606); c=II(c,d,a,b,m[i+10],15,-1051523); b=II(b,c,d,a,m[i+1],21,-2054922799);
+    a=II(a,b,c,d,m[i+8],6,1873313359); d=II(d,a,b,c,m[i+15],10,-30611744); c=II(c,d,a,b,m[i+6],15,-1560198380); b=II(b,c,d,a,m[i+13],21,1309151649);
+    a=II(a,b,c,d,m[i+4],6,-145523070); d=II(d,a,b,c,m[i+11],10,-1120210379); c=II(c,d,a,b,m[i+2],15,718787259); b=II(b,c,d,a,m[i+9],21,-343485551);
+    [a0,b0,c0,d0]=[ADD(a0,a),ADD(b0,b),ADD(c0,c),ADD(d0,d)];
+  }
+  const H='0123456789abcdef'; let s='';
+  for (const n of [a0,b0,c0,d0]) for (let j=0;j<4;j++) s+=H[(n>>(j*8+4))&0xF]+H[(n>>(j*8))&0xF];
+  return s;
+}
+
+function _lfmSig(params, secret) {
+  return _md5(Object.keys(params).sort().map(k => k + params[k]).join('') + secret);
+}
+
+// ─── MUSICBRAINZ ENGINE ─────────────────────────────────────────────
+const MBEngine = {
+  async lookup(artist, title, isrc) {
+    const key = ((artist||'').toLowerCase().trim()) + '|' + ((title||'').toLowerCase().trim());
+    if (S.mbCache[key]) return S.mbCache[key];
+    await sleep(1150);
+    try {
+      let url;
+      if (isrc && isrc.length === 12) {
+        url = MB_BASE + '/recording?query=isrc:' + encodeURIComponent(isrc) + '&fmt=json&limit=3';
+      } else {
+        url = MB_BASE + '/recording?query=recording:%22' + encodeURIComponent(title) + '%22%20AND%20artist:%22' + encodeURIComponent(artist) + '%22&fmt=json&limit=3';
+      }
+      const r = await fetch(url, { headers: { 'User-Agent': MB_UA, 'Accept': 'application/json' } });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const rec = (d.recordings || [])[0];
+      if (!rec) { S.mbCache[key] = { mbid: null, ts: Date.now() }; return null; }
+      const releases = (rec.releases || []).slice().sort((a, b) =>
+        (a.date || '9999') > (b.date || '9999') ? 1 : -1);
+      const orig = releases[0];
+      const firstDate = rec['first-release-date'] || orig?.date || null;
+      const result = {
+        mbid: rec.id, firstRelease: firstDate,
+        country: orig?.country || null,
+        label: orig?.['label-info']?.[0]?.label?.name || null,
+        isOriginal: !!(firstDate && orig?.date && firstDate.slice(0,4) === orig.date.slice(0,4)),
+        ts: Date.now(),
+      };
+      S.mbCache[key] = result;
+      return result;
+    } catch { return null; }
+  },
+  async enrichBg() {
+    const todo = S.myLiked
+      .filter(t => !S.mbCache[((t.a||'').toLowerCase().trim()) + '|' + ((t.t||'').toLowerCase().trim())])
+      .slice(0, 3);
+    for (const t of todo) await this.lookup(t.a||'', t.t||'', t.isrc||null);
+    if (todo.length) {
+      saveState();
+      const el = $('mb-status');
+      if (el) el.textContent = Object.keys(S.mbCache).length + ' release con metadati MusicBrainz';
+    }
+    const remaining = S.myLiked.filter(
+      t => !S.mbCache[((t.a||'').toLowerCase().trim()) + '|' + ((t.t||'').toLowerCase().trim())]
+    );
+    if (remaining.length) setTimeout(() => MBEngine.enrichBg(), 18000);
+  }
+};
+
 
 // Validate that a Tidal search result actually corresponds to the expected track.
 // Prevents "title collision" where a popular song with a common title steals
@@ -887,6 +1018,158 @@ const SimilarArtistEngine = {
   }
 };
 
+// ─── LISTENBRAINZ ENGINE ─────────────────────────────────────────────
+const LBEngine = {
+  // Verify token and save user info
+  async connect(username, token) {
+    try {
+      const r = await fetch(LB_BASE + '/validate-token', {
+        headers: { 'Authorization': 'Token ' + token }
+      });
+      const d = await r.json();
+      if (!d.valid) return { ok: false, msg: 'Token non valido' };
+      S.lbUser = username; S.lbToken = token;
+      saveState();
+      return { ok: true, msg: 'Connesso come ' + username };
+    } catch { return { ok: false, msg: 'Errore di rete' }; }
+  },
+
+  // Submit a single listen (scrobble) to ListenBrainz
+  async submitListen(track, listenedAt) {
+    if (!S.lbToken || !track) return;
+    try {
+      const mbKey = ((track.a||'').toLowerCase().trim()) + '|' + ((track.t||'').toLowerCase().trim());
+      await fetch(LB_BASE + '/submit-listens', {
+        method: 'POST',
+        headers: { 'Authorization': 'Token ' + S.lbToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          listen_type: 'single',
+          payload: [{
+            listened_at: Math.floor((listenedAt || Date.now()) / 1000),
+            track_metadata: {
+              artist_name: track.a || '', track_name: track.t || '', release_name: track.al || '',
+              additional_info: {
+                media_player: 'Swerve', music_service: 'tidal.com',
+                recording_mbid: S.mbCache[mbKey]?.mbid || undefined
+              }
+            }
+          }]
+        })
+      });
+    } catch {}
+  },
+
+  // Send now-playing notification
+  async nowPlaying(track) {
+    if (!S.lbToken || !track) return;
+    try {
+      await fetch(LB_BASE + '/submit-listens', {
+        method: 'POST',
+        headers: { 'Authorization': 'Token ' + S.lbToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          listen_type: 'playing_now',
+          payload: [{ track_metadata: { artist_name: track.a||'', track_name: track.t||'', release_name: track.al||''} }]
+        })
+      });
+    } catch {}
+  },
+
+  // Fetch collaborative-filtering recommendations for the connected user.
+  // Maps MBIDs to artist+title via LB metadata endpoint, stores as lbRecQueries.
+  async loadRecs() {
+    if (!S.lbUser) return;
+    if (Date.now() - S.lbRecsTs < 4 * 3600000) return; // 4h cache
+    try {
+      const r = await fetch(LB_BASE + '/cf/recommendation/user/' + S.lbUser + '/recording?count=50');
+      if (!r.ok) return;
+      const d = await r.json();
+      const mbids = (d.payload?.mbids_and_ratings || []).slice(0, 25).map(x => x.recording_mbid).filter(Boolean);
+      if (!mbids.length) return;
+      const metaR = await fetch(LB_BASE + '/metadata/recording/?recording_mbids=' + mbids.join(',') + '&inc=artist+release');
+      if (!metaR.ok) return;
+      const meta = await metaR.json();
+      S.lbRecQueries = Object.entries(meta).map(([mbid, m]) => ({
+        t: m.recording?.name || m.recording?.title || '',
+        a: m.recording?.['artist-credit-phrase'] || m.recording?.['artist-credit']?.[0]?.artist?.name || '',
+        mbid
+      })).filter(q => q.t && q.a);
+      S.lbRecsTs = Date.now();
+      saveState();
+      // Immediately start resolving a few to Tidal tracks
+      LBEngine.resolveToTidal(8);
+    } catch {}
+  },
+
+  // Convert lbRecQueries to Tidal tracks (background, non-blocking)
+  async resolveToTidal(count) {
+    const pending = S.lbRecQueries.filter(q =>
+      !S.lbTracks.some(t => t._lbMbid === q.mbid) &&
+      !hasSeen({ isrc: '', tidalId: '' }) // just to call hasSeen
+    ).slice(0, count);
+    for (const q of pending) {
+      await sleep(200);
+      try {
+        const found = await API.search(q.t + ' ' + q.a, null);
+        if (!found?.id) continue;
+        if (!_tidalMatchOk(q.a, q.t, found)) continue;
+        const t = fromTidal(found);
+        if (isLiked(t) || hasSeen(t)) continue;
+        t._lbMbid = q.mbid;
+        S.lbTracks.push(t);
+      } catch {}
+    }
+  }
+};
+
+// ─── LAST.FM SCROBBLING ENGINE ────────────────────────────────────────────
+const LastFMEngine = {
+
+  async connect(secret, username, password) {
+    if (!secret || !username || !password) return { ok: false, msg: 'Tutti i campi sono obbligatori' };
+    try {
+      const params = { api_key: LASTFM_KEY, method: 'auth.getMobileSession', password, username };
+      const sig = _lfmSig(params, secret);
+      const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
+      const r = await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
+      const d = await r.json();
+      if (d.error) return { ok: false, msg: 'Errore Last.fm: ' + d.message };
+      S.lfmSecret = secret;
+      S.lfmSessionKey = d.session?.key;
+      S.lfmUsername = d.session?.name || username;
+      saveState();
+      return { ok: true, msg: 'Connesso come ' + S.lfmUsername };
+    } catch (e) { return { ok: false, msg: 'Errore: ' + e.message }; }
+  },
+
+  async nowPlaying(track) {
+    if (!S.lfmSessionKey || !S.lfmSecret || !track) return;
+    try {
+      const params = {
+        api_key: LASTFM_KEY, artist: track.a||'', duration: String(Math.round((track.d||0)/1000)),
+        method: 'track.updateNowPlaying', sk: S.lfmSessionKey, track: track.t||''
+      };
+      if (track.al) params.album = track.al;
+      const sig = _lfmSig(params, S.lfmSecret);
+      const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
+      await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
+    } catch {}
+  },
+
+  async scrobble(track, listenedAt) {
+    if (!S.lfmSessionKey || !S.lfmSecret || !track) return;
+    try {
+      const params = {
+        api_key: LASTFM_KEY, artist: track.a||'', method: 'track.scrobble',
+        sk: S.lfmSessionKey, timestamp: String(Math.floor((listenedAt||Date.now())/1000)),
+        track: track.t||''
+      };
+      if (track.al) params.album = track.al;
+      const sig = _lfmSig(params, S.lfmSecret);
+      const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
+      await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
+    } catch {}
+  }
+};
 // ─── FEATURE VECTORS ──────────────────────────────────────────────
 // Builds a sparse vector from a track's Discogs metadata + Last.fm tags.
 // Keys: sty: (Discogs style), gen: (genre), tag: (Last.fm), dec: (decade),
@@ -906,9 +1189,15 @@ const FeatureVec = {
     const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
     (S.enrichCache[ck]?.tags || []).forEach(t => add(`tag:${t.n}`, t.w * 1.5));
 
-    // Decade
-    const y = parseInt(track.y);
-    if (y > 1900) add(`dec:${Math.floor(y / 10) * 10}`, 1.0);
+    // Decade — prefer MusicBrainz firstRelease for precision
+    const mbKeyFV = ((track.a||'').toLowerCase().trim()) + '|' + ((track.t||'').toLowerCase().trim());
+    const mbFV = S.mbCache[mbKeyFV];
+    const yr = parseInt(mbFV?.firstRelease?.slice(0,4) || track.y);
+    if (yr > 1900) add('dec:' + (Math.floor(yr/10)*10), 1.0);
+
+    // MusicBrainz enrichment: more precise country + label
+    if (mbFV?.country) add('ctr:' + mbFV.country.toLowerCase(), 0.5);
+    if (mbFV?.label)   add('lbl:' + mbFV.label.toLowerCase().slice(0,20), 0.35);
 
     return vec;
   },
@@ -981,7 +1270,9 @@ const Scorer = {
     // 2. Quality — rare-grade signals from Last.fm tags
     const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
     const rareCount = (S.enrichCache[ck]?.tags || []).filter(t => this.RARE_TAGS.has(t.n)).length;
-    const quality   = Math.min(0.3 + rareCount * 0.12, 1.0);
+    const mbScorer  = S.mbCache[ck];
+    const origBonus = mbScorer?.isOriginal === true ? 0.1 : 0;
+    const quality   = Math.min(0.3 + rareCount * 0.12 + origBonus, 1.0);
 
     // 3. Novelty — penalise recently surfaced artists
     const ak  = (track.a || '').toLowerCase().trim();
@@ -1208,6 +1499,16 @@ const Queue = {
         }
       }
 
+      // Mix in ListenBrainz CF recommendations if available
+      if (S.lbTracks?.length && !forceSeedId) {
+        const lbBatch = S.lbTracks.splice(0, 6);
+        for (const t of lbBatch) {
+          if (!hasSeen(t) && !isLiked(t)) newTracks.push(t);
+        }
+        // Refill LB tracks in background when running low
+        if (S.lbTracks.length < 4) LBEngine.resolveToTidal(8);
+      }
+
       // Multi-factor sort: Scorer (affinity+quality+novelty) + small random jitter
       const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
       newTracks.sort((a, b) => {
@@ -1338,6 +1639,9 @@ const Player = {
     updatePlayPauseIcons();
     updateLikeBtn();
     updateMediaSession(track);
+  // Notify scrobbling services of now-playing
+  LBEngine.nowPlaying(track);
+  LastFMEngine.nowPlaying(track);
 
     // Load lyrics if tidal and full player open
     if (S.fullPlayerOpen && track.tidalId) {
@@ -1747,6 +2051,11 @@ function _checkListenSignal(track, fullListen = false) {
   S.listenStart = 0;
   if (fullListen || secs >= LISTEN_LONG_SEC) {
     UserProfile.update(track, 'listen_long');
+    // Scrobble: listened long enough (>= 30s or full track)
+    if (secs >= 30 || fullListen) {
+      LBEngine.submitListen(track, S.listenStart || (Date.now() - secs * 1000));
+      LastFMEngine.scrobble(track, S.listenStart || (Date.now() - secs * 1000));
+    }
     saveState();
   } else if (secs > 1 && secs < LISTEN_SKIP_SEC) {
     UserProfile.update(track, 'skip_fast');
@@ -2015,6 +2324,20 @@ function updateSidebarStats() {
   if (count) count.textContent = S.myLiked.length + CATALOG.length;
 }
 
+
+// ─── SETTINGS HELPERS ────────────────────────────────────────────
+function setSettingsStatus(service, ok, msg) {
+  const el = $(service + '-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'settings-status ' + (ok ? 'ok' : 'err');
+}
+function updateSettingsBadges() {
+  const lb  = $('lb-badge');
+  const lfm = $('lfm-badge');
+  if (lb)  { lb.textContent  = S.lbToken        ? ('✓ ' + (S.lbUser || 'connesso'))    : 'Non connesso'; lb.className  = 'settings-badge' + (S.lbToken        ? ' connected' : ''); }
+  if (lfm) { lfm.textContent = S.lfmSessionKey   ? ('✓ ' + (S.lfmUsername || 'connesso')) : 'Non connesso'; lfm.className = 'settings-badge' + (S.lfmSessionKey   ? ' connected' : ''); }
+}
 
 // ─── COUNTRY PICKER ──────────────────────────────────────────────────────────
 function openCountryPicker() {
@@ -2683,6 +3006,33 @@ function initEvents() {
     if (S.playerTrack) Player.play(S.playerTrack);
   });
 
+  // Settings view — ListenBrainz connect
+  $('btn-lb-connect').addEventListener('click', async () => {
+    const btn = $('btn-lb-connect');
+    const username = $('lb-username').value.trim();
+    const token    = $('lb-token').value.trim();
+    if (!username || !token) { setSettingsStatus('lb', false, 'Inserisci username e token'); return; }
+    btn.disabled = true; btn.textContent = 'Connessione…';
+    const res = await LBEngine.connect(username, token);
+    btn.disabled = false; btn.textContent = 'Connetti';
+    setSettingsStatus('lb', res.ok, res.msg);
+    if (res.ok) { updateSettingsBadges(); LBEngine.loadRecs(); }
+  });
+
+  // Settings view — Last.fm connect
+  $('btn-lfm-connect').addEventListener('click', async () => {
+    const btn      = $('btn-lfm-connect');
+    const secret   = $('lfm-secret').value.trim();
+    const username = $('lfm-username').value.trim();
+    const password = $('lfm-password').value.trim();
+    btn.disabled = true; btn.textContent = 'Connessione…';
+    const res = await LastFMEngine.connect(secret, username, password);
+    btn.disabled = false; btn.textContent = 'Connetti';
+    $('lfm-password').value = ''; // never keep password in DOM
+    setSettingsStatus('lfm', res.ok, res.msg);
+    if (res.ok) updateSettingsBadges();
+  });
+
   // Country picker
   $('btn-country').addEventListener('click', openCountryPicker);
   $('country-backdrop').addEventListener('click', closeCountryPicker);
@@ -2885,6 +3235,13 @@ async function init() {
   // Background enrichment: fetch Last.fm tags for liked tracks over time.
   // Runs lazily so it never blocks the UI. Profile improves with each batch.
   setTimeout(() => EnrichEngine.enrichLikedBg(), 5000);
+  setTimeout(() => MBEngine.enrichBg(), 12000);
+  if (S.lbUser) { setTimeout(() => LBEngine.loadRecs(), 8000); }
+  updateSettingsBadges();
+  // Restore settings form values for connected services
+  if (S.lbUser)      { const el = $('lb-username'); if (el) el.value = S.lbUser; }
+  if (S.lfmUsername) { const el = $('lfm-username'); if (el) el.value = S.lfmUsername; }
+  if (S.lfmSecret)   { const el = $('lfm-secret');   if (el) el.value = S.lfmSecret; }
 }
 
 async function seedInitialTaste(tracks) {
