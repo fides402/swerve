@@ -768,6 +768,28 @@
     .collapse-btn:hover { color: var(--text); background: var(--surface3); }
     .collapse-btn svg { width: 18px; height: 18px; }
 
+    /* ── QUALITY PICKER ── */
+    .quality-picker {
+      display: flex;
+      background: var(--surface2);
+      border-radius: 50px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .quality-btn {
+      padding: 4px 11px;
+      border-radius: 50px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+      color: var(--text3);
+      background: transparent;
+      transition: background var(--transition), color var(--transition);
+    }
+    .quality-btn.active {
+      background: var(--surface3);
+      color: var(--text);
+    }
+    .quality-btn:hover:not(.active) { color: var(--text2); }
+
     .full-player-body {
       flex: 1; display: flex; align-items: stretch;
       overflow: hidden;
@@ -1390,6 +1412,11 @@
 <div id="player-full">
   <div class="full-player-top">
     <div class="full-player-source" id="full-source">Riproduzione in corso</div>
+    <div class="quality-picker" id="quality-picker">
+      <button class="quality-btn" data-q="LOW">128</button>
+      <button class="quality-btn active" data-q="HIGH">320</button>
+      <button class="quality-btn" data-q="LOSSLESS">FLAC</button>
+    </div>
     <button class="collapse-btn" id="btn-collapse-player">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <polyline points="6 9 12 15 18 9"/>

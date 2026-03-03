@@ -181,6 +181,8 @@ const S = {
   profileTotal:  0,    // sum of |weights| added (for normalization)
   // Session-only: timestamp when current player track started (implicit signals)
   listenStart: 0,
+  // Stream quality preference (persisted): 'LOW' | 'HIGH' | 'LOSSLESS'
+  streamQuality: 'HIGH',
 
   // Player
   audio: new Audio(),
@@ -229,6 +231,7 @@ function saveState() {
       enrichCache:    enrichPruned,
       profileVector:  S.profileVector,
       profileTotal:   S.profileTotal,
+      streamQuality:  S.streamQuality,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -247,6 +250,7 @@ function loadState() {
     S.enrichCache     = d.enrichCache     || {};
     S.profileVector   = d.profileVector   || {};
     S.profileTotal    = d.profileTotal    || 0;
+    S.streamQuality   = d.streamQuality   || 'HIGH';
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -1031,10 +1035,13 @@ const Player = {
 
     let url = null;
 
-    // Try Tidal stream first
+    // Try Tidal stream at preferred quality, fall back down the chain
     if (track.tidalId) {
-      url = await API.getStreamUrl(track.tidalId, 'HIGH');
-      if (!url) url = await API.getStreamUrl(track.tidalId, 'LOSSLESS');
+      const q = S.streamQuality || 'HIGH';
+      url = await API.getStreamUrl(track.tidalId, q);
+      // Fallback chain: LOSSLESS → HIGH → LOW
+      if (!url && q === 'LOSSLESS') url = await API.getStreamUrl(track.tidalId, 'HIGH');
+      if (!url) url = await API.getStreamUrl(track.tidalId, 'LOW');
     }
 
     // Fallback to Spotify preview
@@ -1709,7 +1716,14 @@ function updateSidebarStats() {
 }
 
 // ─── FULL PLAYER ──────────────────────────────────────────────────
+function updateQualityPicker() {
+  $('quality-picker')?.querySelectorAll('.quality-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.q === S.streamQuality);
+  });
+}
+
 function openFullPlayer() {
+  updateQualityPicker();
   S.fullPlayerOpen = true;
   $('player-full').classList.add('open');
   if (S.playerTrack?.tidalId && S.lyricsOpen) {
@@ -2311,6 +2325,17 @@ function initEvents() {
 
   // Full player controls
   $('btn-collapse-player').addEventListener('click', () => closeFullPlayer());
+
+  // Quality picker
+  $('quality-picker').addEventListener('click', e => {
+    const btn = e.target.closest('.quality-btn');
+    if (!btn) return;
+    S.streamQuality = btn.dataset.q;
+    saveState();
+    updateQualityPicker();
+    // If a track is already playing, re-stream at new quality immediately
+    if (S.playerTrack) Player.play(S.playerTrack);
+  });
   $('full-play-pause').addEventListener('click', () => Player.togglePlay());
   $('full-prev').addEventListener('click', () => Player.prev());
   $('full-next').addEventListener('click', () => Player.next());
