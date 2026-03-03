@@ -20,6 +20,59 @@ const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
 const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
 const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
 
+// ─── COUNTRY LIST (for picker) ───────────────────────────────────────────────
+const COUNTRIES = [
+  { name: 'Algeria',        flag: '🇩🇿', val: 'Algeria' },
+  { name: 'Argentina',      flag: '🇦🇷', val: 'Argentina' },
+  { name: 'Australia',      flag: '🇦🇺', val: 'Australia' },
+  { name: 'Austria',        flag: '🇦🇹', val: 'Austria' },
+  { name: 'Belgium',        flag: '🇧🇪', val: 'Belgium' },
+  { name: 'Brazil',         flag: '🇧🇷', val: 'Brazil' },
+  { name: 'Bulgaria',       flag: '🇧🇬', val: 'Bulgaria' },
+  { name: 'Canada',         flag: '🇨🇦', val: 'Canada' },
+  { name: 'Chile',          flag: '🇨🇱', val: 'Chile' },
+  { name: 'Colombia',       flag: '🇨🇴', val: 'Colombia' },
+  { name: 'Cuba',           flag: '🇨🇺', val: 'Cuba' },
+  { name: 'Czechoslovakia', flag: '🇨🇿', val: 'Czechoslovakia' },
+  { name: 'Denmark',        flag: '🇩🇰', val: 'Denmark' },
+  { name: 'Egypt',          flag: '🇪🇬', val: 'Egypt' },
+  { name: 'Ethiopia',       flag: '🇪🇹', val: 'Ethiopia' },
+  { name: 'Finland',        flag: '🇫🇮', val: 'Finland' },
+  { name: 'France',         flag: '🇫🇷', val: 'France' },
+  { name: 'Germany',        flag: '🇩🇪', val: 'Germany' },
+  { name: 'Ghana',          flag: '🇬🇭', val: 'Ghana' },
+  { name: 'Greece',         flag: '🇬🇷', val: 'Greece' },
+  { name: 'Hungary',        flag: '🇭🇺', val: 'Hungary' },
+  { name: 'India',          flag: '🇮🇳', val: 'India' },
+  { name: 'Iran',           flag: '🇮🇷', val: 'Iran' },
+  { name: 'Israel',         flag: '🇮🇱', val: 'Israel' },
+  { name: 'Italy',          flag: '🇮🇹', val: 'Italy' },
+  { name: 'Jamaica',        flag: '🇯🇲', val: 'Jamaica' },
+  { name: 'Japan',          flag: '🇯🇵', val: 'Japan' },
+  { name: 'Kenya',          flag: '🇰🇪', val: 'Kenya' },
+  { name: 'Lebanon',        flag: '🇱🇧', val: 'Lebanon' },
+  { name: 'Mexico',         flag: '🇲🇽', val: 'Mexico' },
+  { name: 'Morocco',        flag: '🇲🇦', val: 'Morocco' },
+  { name: 'Netherlands',    flag: '🇳🇱', val: 'Netherlands' },
+  { name: 'Nigeria',        flag: '🇳🇬', val: 'Nigeria' },
+  { name: 'Norway',         flag: '🇳🇴', val: 'Norway' },
+  { name: 'Peru',           flag: '🇵🇪', val: 'Peru' },
+  { name: 'Poland',         flag: '🇵🇱', val: 'Poland' },
+  { name: 'Portugal',       flag: '🇵🇹', val: 'Portugal' },
+  { name: 'Romania',        flag: '🇷🇴', val: 'Romania' },
+  { name: 'Senegal',        flag: '🇸🇳', val: 'Senegal' },
+  { name: 'South Africa',   flag: '🇿🇦', val: 'South Africa' },
+  { name: 'South Korea',    flag: '🇰🇷', val: 'South Korea' },
+  { name: 'Spain',          flag: '🇪🇸', val: 'Spain' },
+  { name: 'Sweden',         flag: '🇸🇪', val: 'Sweden' },
+  { name: 'Switzerland',    flag: '🇨🇭', val: 'Switzerland' },
+  { name: 'Turkey',         flag: '🇹🇷', val: 'Turkey' },
+  { name: 'UK',             flag: '🇬🇧', val: 'UK' },
+  { name: 'US',             flag: '🇺🇸', val: 'US' },
+  { name: 'Venezuela',      flag: '🇻🇪', val: 'Venezuela' },
+  { name: 'Yugoslavia',     flag: '🇷🇸', val: 'Yugoslavia' },
+];
+
 // ─── CATALOG (from CSV) ───────────────────────────────────────────
 const CATALOG = JSON.parse(document.getElementById('catalog-data').textContent);
 
@@ -183,6 +236,7 @@ const S = {
   listenStart: 0,
   // Stream quality preference (persisted): 'LOW' | 'HIGH' | 'LOSSLESS'
   streamQuality: 'HIGH',
+  forcedCountry: null,  // null = use cfg.country; string = override
 
   // Player
   audio: new Audio(),
@@ -232,6 +286,7 @@ function saveState() {
       profileVector:  S.profileVector,
       profileTotal:   S.profileTotal,
       streamQuality:  S.streamQuality,
+      forcedCountry: S.forcedCountry,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -251,6 +306,7 @@ function loadState() {
     S.profileVector   = d.profileVector   || {};
     S.profileTotal    = d.profileTotal    || 0;
     S.streamQuality   = d.streamQuality   || 'HIGH';
+    S.forcedCountry  = d.forcedCountry  || null;
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -498,7 +554,8 @@ const DiscogsEngine = {
       });
       if (cfg.genre)   qs.set('genre',   cfg.genre);
       if (cfg.style)   qs.set('style',   cfg.style);
-      if (cfg.country) qs.set('country', cfg.country);
+      const country = S.forcedCountry || cfg.country;
+      if (country) qs.set('country', country);
       if (cfg.year)    qs.set('year',    cfg.year);
 
       let releases = [];
@@ -1744,6 +1801,52 @@ function updateSidebarStats() {
   if (count) count.textContent = S.myLiked.length + CATALOG.length;
 }
 
+
+// ─── COUNTRY PICKER ──────────────────────────────────────────────────────────
+function openCountryPicker() {
+  renderCountryList('');
+  $('country-search').value = '';
+  $('country-backdrop').classList.add('open');
+  $('country-sheet').classList.add('open');
+  setTimeout(() => $('country-search').focus(), 320);
+}
+
+function closeCountryPicker() {
+  $('country-backdrop').classList.remove('open');
+  $('country-sheet').classList.remove('open');
+}
+
+function setCountry(val) {
+  S.forcedCountry = val || null;
+  saveState();
+  const label = val ? (COUNTRIES.find(c => c.val === val)?.flag + ' ' + COUNTRIES.find(c => c.val === val)?.name) : 'Tutti';
+  $('country-label-btn').textContent = label;
+  $('btn-country').classList.toggle('filtered', !!val);
+  closeCountryPicker();
+  // Clear queue so next refill uses new country
+  S.queue = [];
+  renderCardStack();
+  toast(val ? ('Paese: ' + label) : 'Tutti i paesi');
+}
+
+function renderCountryList(query) {
+  const list = $('country-list');
+  if (!list) return;
+  const q = query.trim().toLowerCase();
+  const items = q ? COUNTRIES.filter(c => c.name.toLowerCase().includes(q)) : COUNTRIES;
+
+  let html = '';
+  if (!q) {
+    const allActive = !S.forcedCountry;
+    html += `<div class="country-item all-countries${allActive ? ' active' : ''}" data-val="">🌍 Tutti i paesi</div>`;
+  }
+  items.forEach(c => {
+    const active = S.forcedCountry === c.val;
+    html += `<div class="country-item${active ? ' active' : ''}" data-val="${c.val}">${c.flag} ${c.name}</div>`;
+  });
+  list.innerHTML = html;
+}
+
 // ─── FULL PLAYER ──────────────────────────────────────────────────
 function updateQualityPicker() {
   $('quality-picker')?.querySelectorAll('.quality-btn').forEach(btn => {
@@ -2365,6 +2468,17 @@ function initEvents() {
     // If a track is already playing, re-stream at new quality immediately
     if (S.playerTrack) Player.play(S.playerTrack);
   });
+
+  // Country picker
+  $('btn-country').addEventListener('click', openCountryPicker);
+  $('country-backdrop').addEventListener('click', closeCountryPicker);
+  $('country-search').addEventListener('input', e => renderCountryList(e.target.value));
+  $('country-list').addEventListener('click', e => {
+    const item = e.target.closest('.country-item');
+    if (!item) return;
+    setCountry(item.dataset.val);
+  });
+
   $('full-play-pause').addEventListener('click', () => Player.togglePlay());
   $('full-prev').addEventListener('click', () => Player.prev());
   $('full-next').addEventListener('click', () => Player.next());
@@ -2529,6 +2643,14 @@ async function init() {
   $('full-volume').value = S.volume;
   updateShuffleRepeatBtns();
   updateSidebarStats();
+  // Restore country label from persisted state
+  if (S.forcedCountry) {
+    const c = COUNTRIES.find(x => x.val === S.forcedCountry);
+    if (c) {
+      $('country-label-btn').textContent = c.flag + ' ' + c.name;
+      $('btn-country').classList.add('filtered');
+    }
+  }
 
   // Seed the taste engine from liked CSV tracks (initial setup)
   if (S.taste.seeds.length === 0 && CATALOG.length > 0) {
