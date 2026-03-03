@@ -251,6 +251,9 @@ const S = {
   lfmSecret: null,          // Last.fm API secret (persisted)
   lfmSessionKey: null,      // Last.fm session key (persisted, never store password)
   lfmUsername: null,        // Last.fm username (persisted)
+  dislikeVec: {},           // cumulative feature vector of skipped tracks (Plan E)
+  dislikeTotal: 0,          // normalization counter for dislikeVec
+  artistCooldown: {},       // artistKey → timestamp of last queue appearance (Plan B)
 
   // Player
   audio: new Audio(),
@@ -292,6 +295,10 @@ function saveState() {
         .filter(([, v]) => now - (v.ts || 0) < 7 * 86400_000)
         .slice(-2000)
     );
+    // Prune artistCooldown: remove entries older than 2 hours
+    for (const k in S.artistCooldown) {
+      if (Date.now() - S.artistCooldown[k] > 2 * 3600_000) delete S.artistCooldown[k];
+    }
     localStorage.setItem('swerve_v2', JSON.stringify({
       myLiked:        S.myLiked,
       mySkipped:      [...S.mySkipped],
@@ -318,6 +325,9 @@ function saveState() {
       lfmSecret:     S.lfmSecret,
       lfmSessionKey: S.lfmSessionKey,
       lfmUsername:   S.lfmUsername,
+      dislikeVec:    S.dislikeVec,
+      dislikeTotal:  S.dislikeTotal,
+      artistCooldown: S.artistCooldown,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -346,6 +356,9 @@ function loadState() {
     S.lfmSecret      = d.lfmSecret      || null;
     S.lfmSessionKey  = d.lfmSessionKey  || null;
     S.lfmUsername    = d.lfmUsername    || null;
+    S.dislikeVec     = d.dislikeVec     || {};
+    S.dislikeTotal   = d.dislikeTotal   || 0;
+    S.artistCooldown = d.artistCooldown || {};
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -378,6 +391,50 @@ function randPick(arr, n = 1) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── PLAN A: Weighted seed sample ─────────────────────────────────
+// Samples n seeds from full liked set. Recent tracks have higher weight
+// (linear ramp 1x → 10x) so we explore the full taste graph, not just
+// the last 5 likes.
+function _weightedSeedSample(n) {
+  const pool = S.myLiked.length >= 3 ? S.myLiked : [...S.myLiked, ...CATALOG.slice(0, 50)];
+  if (!pool.length) return [];
+  const len = pool.length;
+  // weights[i]: track at index i (0=oldest) gets weight proportional to position
+  const weights = pool.map((_, i) => 1 + (i / len) * 9); // 1x … 10x
+  const sumW = weights.reduce((s, w) => s + w, 0);
+  const result = [], used = new Set();
+  let attempts = 0;
+  while (result.length < n && attempts < n * 12) {
+    attempts++;
+    let r = Math.random() * sumW, idx = 0;
+    for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idx = i; break; } }
+    if (!used.has(idx)) { used.add(idx); result.push(pool[idx]); }
+  }
+  return result;
+}
+
+// ─── PLAN D: Hard genre filter ────────────────────────────────────
+// Returns top N genre/style keys from the normalised profile vector.
+function _profileTopGenreKeys(n = 14) {
+  const profile = UserProfile.get();
+  return Object.entries(profile)
+    .filter(([k]) => k.startsWith('sty:') || k.startsWith('gen:'))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([k]) => k);
+}
+
+// A candidate track must share ≥1 genre/style key with the top profile keys.
+// Guard is inactive until the profile is mature enough (≥5 actions) and has
+// genre signal. Returns true (pass) when in doubt.
+function _passesGenreFilter(track) {
+  if (S.profileTotal < 5) return true;
+  const topKeys = _profileTopGenreKeys(14);
+  if (!topKeys.length) return true;
+  const vec = FeatureVec.build(track);
+  return topKeys.some(k => vec[k] > 0);
+}
 // ─── MD5 (needed for Last.fm API signature) ────────────────────────────────────────────
 function _md5(input) {
   const ADD = (x,y) => { const l=(x&0xFFFF)+(y&0xFFFF); return (((x>>16)+(y>>16)+(l>>16))<<16)|(l&0xFFFF); };
@@ -1286,10 +1343,25 @@ const Scorer = {
       diversity = Math.max(0.1, 1 - maxSim * 0.8);
     }
 
+    // 5. Dislike penalty — penalise similarity to skipped tracks (Plan E)
+    let dislikePenalty = 0;
+    if (S.dislikeTotal > 0 && Object.keys(S.dislikeVec).length > 0) {
+      const dvec = {};
+      for (const k in S.dislikeVec) dvec[k] = S.dislikeVec[k] / S.dislikeTotal;
+      dislikePenalty = FeatureVec.sim(dvec, vec) * 0.35;
+    }
+
+    // 6. Discovery bonus — reward genuinely new artists (Plan F)
+    const likedArtistSet = new Set(S.myLiked.map(t => (t.a || '').toLowerCase().trim()));
+    const isNewArtist = !likedArtistSet.has(ak) && ri === -1; // not liked, not recently seen
+    const discoveryBonus = isNewArtist && affinity > 0.25 ? 0.15 : 0;
+
     // Weights adapt: when the profile is mature (>10 actions), trust affinity more
     const _mature = S.profileTotal > 10;
     const [_aw, _qw, _nw, _dw] = _mature ? [0.60, 0.20, 0.12, 0.08] : [0.40, 0.25, 0.20, 0.15];
-    const total = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw;
+    const raw   = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw
+                  + discoveryBonus - dislikePenalty;
+    const total = Math.max(0, Math.min(1, raw));
     return { total, affinity, quality, novelty, diversity, vec };
   }
 };
@@ -1419,7 +1491,9 @@ const Queue = {
           const candidates = discogsTracks.filter(t => {
             if (hasSeen(t) || isLiked(t)) return false;
             if (seenSet.has(t.tidalId)) return false;
+            if (!_passesGenreFilter(t)) return false; // Plan D
             seenSet.add(t.tidalId);
+            t._src = 'discogs'; // Plan C
             return true;
           });
           // Score + MMR-rerank for variety and taste alignment
@@ -1427,6 +1501,11 @@ const Queue = {
           const scored = candidates.map(t => ({ t, sc: Scorer.score(t, { recentVecs }) }));
           scored.sort((a, b) => b.sc.total - a.sc.total);
           const reranked = mmrRerank(scored, Math.min(30, scored.length));
+          // Plan B: record artist cooldown for tracks entering queue
+          for (const c of reranked) {
+            const ak2 = (c.t.a || '').toLowerCase().trim();
+            if (ak2) S.artistCooldown[ak2] = Date.now();
+          }
           S.queue.push(...reranked.map(c => c.t));
           updateQueueCounter();
           showDiscoverCards();
@@ -1449,7 +1528,7 @@ const Queue = {
       // then search Tidal for those tracks. Far more targeted than Tidal's
       // generic recommendation black-box.
       if (!forceSeedId && S.myLiked.length >= 2) {
-        const recentLiked = S.myLiked.slice(-8).slice(0, 5);
+        const recentLiked = _weightedSeedSample(5); // Plan A: weighted across full liked set
         for (const liked of recentLiked) {
           await sleep(200);
           try {
@@ -1470,6 +1549,8 @@ const Queue = {
               const t = fromTidal(found);
               if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
               if (t.pop > RARE_POP_MAX) continue;
+              if (!_passesGenreFilter(t)) continue; // Plan D
+              t._src = 'lfm_similar';               // Plan C
               newTracks.push(t);
             }
           } catch { continue; }
@@ -1495,6 +1576,8 @@ const Queue = {
           const t = fromTidal(r.track || r);
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
           if (t.pop > RARE_POP_MAX) continue;
+          if (!_passesGenreFilter(t)) continue; // Plan D
+          t._src = 'tidal_rec';                 // Plan C
           newTracks.push(t);
         }
       }
@@ -1503,28 +1586,70 @@ const Queue = {
       if (S.lbTracks?.length && !forceSeedId) {
         const lbBatch = S.lbTracks.splice(0, 6);
         for (const t of lbBatch) {
-          if (!hasSeen(t) && !isLiked(t)) newTracks.push(t);
+          if (!hasSeen(t) && !isLiked(t) && _passesGenreFilter(t)) { // Plan D
+            t._src = t._src || 'lb_cf';  // Plan C
+            newTracks.push(t);
+          }
         }
         // Refill LB tracks in background when running low
         if (S.lbTracks.length < 4) LBEngine.resolveToTidal(8);
       }
 
-      // Multi-factor sort: Scorer (affinity+quality+novelty) + small random jitter
-      const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
-      newTracks.sort((a, b) => {
-        const sa = Scorer.score(a, { recentVecs: recentVecsG }).total;
-        const sb = Scorer.score(b, { recentVecs: recentVecsG }).total;
-        return (sb - sa) + (Math.random() - 0.5) * 0.08;
+      // Plan B: Artist cooldown filter — skip if artist appeared in queue recently
+      const nowCd = Date.now();
+      const COOLDOWN_MS = 25 * 60_000; // 25 minutes
+      const afterCooldown = newTracks.filter(t => {
+        const ak2 = (t.a || '').toLowerCase().trim();
+        return !ak2 || !(S.artistCooldown[ak2] && (nowCd - S.artistCooldown[ak2]) < COOLDOWN_MS);
       });
+      // Fallback: if cooldown is too aggressive (few candidates left), use original pool
+      const cooldownFiltered = afterCooldown.length >= 4 ? afterCooldown : newTracks;
+
+      // Plan C: Source diversity — max 5 tracks per source per batch
+      const srcCount = {};
+      const srcDiverse = cooldownFiltered.filter(t => {
+        const src = t._src || 'unknown';
+        srcCount[src] = (srcCount[src] || 0) + 1;
+        return srcCount[src] <= 5;
+      });
+      const poolFinal = srcDiverse.length >= 2 ? srcDiverse : cooldownFiltered;
+
+      // Multi-factor score
+      const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
+      const scored = poolFinal.map(t => ({ t, sc: Scorer.score(t, { recentVecs: recentVecsG }) }));
+      scored.sort((a, b) => (b.sc.total - a.sc.total) + (Math.random() - 0.5) * 0.06);
+
+      // Plan G: Profile thinness boost — if a top profile genre is underrepresented in the
+      // top-6 candidates, bump tracks that cover that gap
+      const topGenreKeys = _profileTopGenreKeys(6);
+      if (topGenreKeys.length && scored.length >= 6) {
+        const coveredKeys = new Set(
+          scored.slice(0, 6).flatMap(s => Object.keys(s.sc.vec).filter(k => topGenreKeys.includes(k)))
+        );
+        const thinKeys = topGenreKeys.filter(k => !coveredKeys.has(k));
+        if (thinKeys.length) {
+          for (const s of scored) {
+            if (thinKeys.some(k => s.sc.vec[k] > 0)) s.sc.total = Math.min(1, s.sc.total + 0.12);
+          }
+          scored.sort((a, b) => b.sc.total - a.sc.total);
+        }
+      }
 
       const seenSet = new Set();
-      const unique = newTracks.filter(t => {
-        const k = t.tidalId || t.isrc || t.t;
-        if (seenSet.has(k)) return false;
-        seenSet.add(k);
-        return true;
-      });
+      const unique = scored
+        .map(s => s.t)
+        .filter(t => {
+          const k = t.tidalId || t.isrc || t.t;
+          if (seenSet.has(k)) return false;
+          seenSet.add(k);
+          return true;
+        });
 
+      // Plan B: record cooldown for each artist entering the queue
+      for (const t of unique) {
+        const ak2 = (t.a || '').toLowerCase().trim();
+        if (ak2) S.artistCooldown[ak2] = Date.now();
+      }
       S.queue.push(...unique);
       updateQueueCounter();
       showDiscoverCards();
@@ -2059,6 +2184,10 @@ function _checkListenSignal(track, fullListen = false) {
     saveState();
   } else if (secs > 1 && secs < LISTEN_SKIP_SEC) {
     UserProfile.update(track, 'skip_fast');
+    // Plan E: accumulate dislike vector from skipped tracks
+    const dv = FeatureVec.build(track);
+    for (const k in dv) S.dislikeVec[k] = (S.dislikeVec[k] || 0) + dv[k];
+    S.dislikeTotal = (S.dislikeTotal || 0) + 1;
     saveState();
   }
 }
