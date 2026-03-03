@@ -16,6 +16,7 @@ const API_TIMEOUT     = 9000;
 const RARE_POP_MAX    = 40;  // filter out mainstream hits (pop > this)
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
 const LASTFM_KEY      = 'acd1fbf80c19d2febdf1bf378293eedf';
+const LASTFM_SECRET   = 'acd1fbf80c19d2febdf1bf378293eedf';
 const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
 const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
 const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
@@ -1124,16 +1125,15 @@ const LBEngine = {
 // ─── LAST.FM SCROBBLING ENGINE ────────────────────────────────────────────
 const LastFMEngine = {
 
-  async connect(secret, username, password) {
-    if (!secret || !username || !password) return { ok: false, msg: 'Tutti i campi sono obbligatori' };
+  async connect(username, password) {
+    if (!username || !password) return { ok: false, msg: 'Username e password obbligatori' };
     try {
       const params = { api_key: LASTFM_KEY, method: 'auth.getMobileSession', password: _md5(password), username };
-      const sig = _lfmSig(params, secret);
+      const sig = _lfmSig(params, LASTFM_SECRET);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       const r = await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
       const d = await r.json();
       if (d.error) return { ok: false, msg: 'Errore Last.fm: ' + d.message };
-      S.lfmSecret = secret;
       S.lfmSessionKey = d.session?.key;
       S.lfmUsername = d.session?.name || username;
       saveState();
@@ -1142,21 +1142,21 @@ const LastFMEngine = {
   },
 
   async nowPlaying(track) {
-    if (!S.lfmSessionKey || !S.lfmSecret || !track) return;
+    if (!S.lfmSessionKey || !track) return;
     try {
       const params = {
         api_key: LASTFM_KEY, artist: track.a||'', duration: String(Math.round((track.d||0)/1000)),
         method: 'track.updateNowPlaying', sk: S.lfmSessionKey, track: track.t||''
       };
       if (track.al) params.album = track.al;
-      const sig = _lfmSig(params, S.lfmSecret);
+      const sig = _lfmSig(params, LASTFM_SECRET);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
     } catch {}
   },
 
   async scrobble(track, listenedAt) {
-    if (!S.lfmSessionKey || !S.lfmSecret || !track) return;
+    if (!S.lfmSessionKey || !track) return;
     try {
       const params = {
         api_key: LASTFM_KEY, artist: track.a||'', method: 'track.scrobble',
@@ -1164,7 +1164,7 @@ const LastFMEngine = {
         track: track.t||''
       };
       if (track.al) params.album = track.al;
-      const sig = _lfmSig(params, S.lfmSecret);
+      const sig = _lfmSig(params, LASTFM_SECRET);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
     } catch {}
@@ -3022,11 +3022,10 @@ function initEvents() {
   // Settings view — Last.fm connect
   $('btn-lfm-connect').addEventListener('click', async () => {
     const btn      = $('btn-lfm-connect');
-    const secret   = $('lfm-secret').value.trim();
     const username = $('lfm-username').value.trim();
     const password = $('lfm-password').value.trim();
     btn.disabled = true; btn.textContent = 'Connessione…';
-    const res = await LastFMEngine.connect(secret, username, password);
+    const res = await LastFMEngine.connect(username, password);
     btn.disabled = false; btn.textContent = 'Connetti';
     $('lfm-password').value = ''; // never keep password in DOM
     setSettingsStatus('lfm', res.ok, res.msg);
@@ -3241,7 +3240,6 @@ async function init() {
   // Restore settings form values for connected services
   if (S.lbUser)      { const el = $('lb-username'); if (el) el.value = S.lbUser; }
   if (S.lfmUsername) { const el = $('lfm-username'); if (el) el.value = S.lfmUsername; }
-  if (S.lfmSecret)   { const el = $('lfm-secret');   if (el) el.value = S.lfmSecret; }
 }
 
 async function seedInitialTaste(tracks) {
