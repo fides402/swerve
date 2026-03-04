@@ -1730,14 +1730,33 @@ const Taste = {
     const decade = Math.floor(parseInt(track.y || 2000) / 10) * 10;
     S.taste.decades[decade] = S.taste.decades[decade] || { liked: 0, skipped: 0 };
     S.taste.decades[decade].skipped++;
+
+    // Proxy-skip penalty: fetch similar artists and penalize them too (background)
+    setTimeout(async () => {
+      try {
+        const similar = await SimilarArtistEngine._similar(a);
+        for (const sim of similar.slice(0, 5)) {
+          const sa = normalizeArtist(sim);
+          S.taste.artists[sa] = S.taste.artists[sa] || { liked: 0, skipped: 0 };
+          S.taste.artists[sa].skipped += 0.5; // proxy penalty
+        }
+        saveState();
+      } catch { }
+    }, 100);
+
     saveState();
   },
 
   shouldFilter(track) {
     const a = normalizeArtist(track.a);
     const pref = S.taste.artists[a];
-    // Block if skips heavily outweigh likes (3 skips + no likes, or skips > 2× likes)
-    if (pref && pref.skipped >= 3 && pref.skipped > (pref.liked || 0) * 2) return true;
+
+    // Aggressive Penalty: Block if skipped even ONCE with zero likes
+    if (pref && pref.skipped >= 1 && (pref.liked || 0) === 0) return true;
+
+    // Block if skips outnumber likes
+    if (pref && pref.skipped > (pref.liked || 0)) return true;
+
     return false;
   },
 
@@ -1851,7 +1870,12 @@ const Queue = {
       if (baseArtists && baseArtists.length > 0) {
         updateSeedInfo(`Espansione grappolo Last.fm in corso...`);
         const clusterTracks = await SimilarArtistEngine.buildClusterQueue(baseArtists, queueNeeds);
-        merged = clusterTracks;
+
+        // Strict Catalog Filter: completely exclude any track that exists in the spreadsheet
+        merged = clusterTracks.filter(ct => {
+          const match = CATALOG.some(c => c.t.toLowerCase().trim() === ct.t.toLowerCase().trim() && c.a.toLowerCase().trim() === ct.a.toLowerCase().trim());
+          return !match;
+        });
       }
 
       // Catalog fallback only if cluster fails completely
