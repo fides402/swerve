@@ -1425,7 +1425,6 @@ const SpotifyEngine = {
   },
 
   async getRecsForProfile() {
-    if (!S.audioProfile || S.audioProfile.count < 3) return [];
     const token = await this._getToken();
     if (!token) return [];
     try {
@@ -1433,8 +1432,16 @@ const SpotifyEngine = {
       await this.loadGenreSeeds();
 
       // Resolve top liked artists to Spotify IDs (up to 2)
-      const topArtists = Object.entries(S.taste.artists || {})
+      let topArtists = Object.entries(S.taste.artists || {})
         .sort((a, b) => b[1].liked - a[1].liked).slice(0, 2).map(([a]) => a);
+      if (topArtists.length === 0 && CATALOG.length > 0) {
+        const fallbackArtists = randPick(CATALOG, 5);
+        for (const t of (Array.isArray(fallbackArtists) ? fallbackArtists : [fallbackArtists])) {
+          if (t.a && !topArtists.includes(t.a)) topArtists.push(t.a);
+        }
+        topArtists = topArtists.slice(0, 2);
+      }
+
       const artistIds = [];
       for (const a of topArtists) {
         await sleep(100);
@@ -1451,18 +1458,20 @@ const SpotifyEngine = {
       const totalSeeds = artistIds.length + genreSeedList.length;
       if (!totalSeeds) return [];
 
-      const { energy, valence, tempo } = S.audioProfile;
       const params = new URLSearchParams({
         limit: '15',
         max_popularity: String(RARE_POP_MAX), // avoid mainstream hits
-        target_energy: energy.mean.toFixed(3),
-        target_valence: valence.mean.toFixed(3),
-        target_tempo: Math.round(tempo.mean),
-        min_energy: Math.max(0, energy.mean - 2 * energy.std).toFixed(3),
-        max_energy: Math.min(1, energy.mean + 2 * energy.std).toFixed(3),
-        min_valence: Math.max(0, valence.mean - 2 * valence.std).toFixed(3),
-        max_valence: Math.min(1, valence.mean + 2 * valence.std).toFixed(3),
       });
+      if (S.audioProfile && S.audioProfile.count >= 3) {
+        const { energy, valence, tempo } = S.audioProfile;
+        params.set('target_energy', energy.mean.toFixed(3));
+        params.set('target_valence', valence.mean.toFixed(3));
+        params.set('target_tempo', Math.round(tempo.mean).toString());
+        params.set('min_energy', Math.max(0, energy.mean - 2 * energy.std).toFixed(3));
+        params.set('max_energy', Math.min(1, energy.mean + 2 * energy.std).toFixed(3));
+        params.set('min_valence', Math.max(0, valence.mean - 2 * valence.std).toFixed(3));
+        params.set('max_valence', Math.min(1, valence.mean + 2 * valence.std).toFixed(3));
+      }
       if (artistIds.length) params.set('seed_artists', artistIds.slice(0, 2).join(','));
       if (genreSeedList.length) params.set('seed_genres', genreSeedList.slice(0, 5 - artistIds.length).join(','));
 
@@ -1484,7 +1493,10 @@ const SpotifyEngine = {
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
           if (t.pop > RARE_POP_MAX) continue;
           const ck = t.isrc || `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
-          if (!S.spotifyCache[ck]) S.spotifyCache[ck] = { energy: energy.mean, valence: valence.mean, tempo: tempo.mean, ts: Date.now() };
+          if (!S.spotifyCache[ck] && S.audioProfile && S.audioProfile.count >= 3) {
+            const { energy, valence, tempo } = S.audioProfile;
+            S.spotifyCache[ck] = { energy: energy.mean, valence: valence.mean, tempo: tempo.mean, ts: Date.now() };
+          }
           t._src = 'spotify_rec';
           result.push(t);
         } catch { }
@@ -1856,7 +1868,20 @@ const Queue = {
 
       if (merged.length === 0 && candidates.length > 0) {
         const fallback = randPick(candidates, Math.min(15, queueNeeds));
-        merged = (Array.isArray(fallback) ? fallback : [fallback]).map(t => ({ ...t, _src: 'catalog' })).filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
+        const arr = Array.isArray(fallback) ? fallback : [fallback];
+        for (const t of arr) {
+          if (!t.tidalId) {
+            await sleep(150);
+            const found = await API.search(t.t, t.isrc);
+            if (found && _tidalMatchOk(t.a, t.t, found)) {
+              t.tidalId = found.id;
+              t.art = t.art || tidalCover(found.album?.cover);
+              t.d = t.d || (found.duration || 0) * 1000;
+              t.al = t.al || found.album?.title;
+            }
+          }
+        }
+        merged = arr.map(t => ({ ...t, _src: 'catalog' })).filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
       }
 
       if (merged.length === 0) {
