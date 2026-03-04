@@ -263,6 +263,8 @@ const S = {
   spotifyTokenExp: 0,       // token expiry timestamp (ms)
   spotifyCache: {},         // track key -> {energy,valence,tempo,key,mode,spotifyId,ts}
   audioProfile: null,       // computed stats from liked tracks audio features
+  genreSeeds: [],           // valid Spotify/EveryNoise genre seed names from available-genre-seeds
+  frontierGenres: [],       // genres discovered from recs' artists → seeds for next batch (genre chaining)
 
   // Player
   audio: new Audio(),
@@ -337,7 +339,9 @@ function saveState() {
       dislikeVec:     S.dislikeVec,
       dislikeTotal:   S.dislikeTotal,
       artistCooldown: S.artistCooldown,
-      frontierTracks: S.frontierTracks.slice(-10),
+      frontierTracks:  S.frontierTracks.slice(-10),
+      genreSeeds:      S.genreSeeds,
+      frontierGenres:  S.frontierGenres.slice(-20),
       spotifyCache:   Object.fromEntries(
         Object.entries(S.spotifyCache).filter(([,v]) => Date.now() - (v.ts||0) < 30*86400_000).slice(-800)
       ),
@@ -373,9 +377,11 @@ function loadState() {
     S.dislikeVec     = d.dislikeVec     || {};
     S.dislikeTotal   = d.dislikeTotal   || 0;
     S.artistCooldown = d.artistCooldown || {};
-    S.frontierTracks = d.frontierTracks || [];
-    S.spotifyCache   = d.spotifyCache   || {};
-    S.audioProfile   = d.audioProfile   || null;
+    S.frontierTracks  = d.frontierTracks  || [];
+    S.spotifyCache    = d.spotifyCache    || {};
+    S.audioProfile    = d.audioProfile    || null;
+    S.genreSeeds      = d.genreSeeds      || [];
+    S.frontierGenres  = d.frontierGenres  || [];
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -1337,13 +1343,73 @@ const SpotifyEngine = {
         && Math.abs(f.tempo   - tempo.mean)   <= 2.2 * tempo.std;
   },
 
+  // Fetch and cache all valid EveryNoise/Spotify genre seed names (once per session)
+  async loadGenreSeeds() {
+    if (S.genreSeeds.length > 0) return S.genreSeeds;
+    const token = await this._getToken();
+    if (!token) return [];
+    try {
+      const r = await fetch(`${SPOTIFY_BASE}/recommendations/available-genre-seeds`, { headers: { 'Authorization': 'Bearer ' + token } });
+      const d = await r.json();
+      S.genreSeeds = d.genres || [];
+      saveState();
+      return S.genreSeeds;
+    } catch { return []; }
+  },
+
+  // Map profile's top sty:/gen: keys to valid Spotify genre seeds.
+  // Also mixes in frontierGenres (discovered through previous recs).
+  _profileToGenreSeeds(n = 3) {
+    const available = new Set(S.genreSeeds);
+    if (!available.size) return [];
+    const topKeys = _profileTopGenreKeys(20);
+    const matched = [];
+    for (const k of topKeys) {
+      const raw = k.replace(/^(sty:|gen:|tag:)/, '').toLowerCase().trim();
+      if (available.has(raw)) matched.push(raw);
+      // Try with hyphens replacing spaces
+      const hyph = raw.replace(/\s+/g, '-');
+      if (hyph !== raw && available.has(hyph)) matched.push(hyph);
+      if (matched.length >= n) break;
+    }
+    // Mix in frontier genres (max 2), deduped
+    for (const g of S.frontierGenres.slice(-4)) {
+      if (matched.length >= n + 2) break;
+      if (!matched.includes(g)) matched.push(g);
+    }
+    return [...new Set(matched)].slice(0, n + 2);
+  },
+
+  // After getting Spotify recs, extract genres from their artists to extend frontierGenres.
+  // This creates genre-level constellation chaining (genre graph traversal).
+  async _extendGenreFrontier(spTracks, token) {
+    try {
+      const artistIds = [...new Set(spTracks.flatMap(t => t.artists?.map(a => a.id) || []))].slice(0, 10);
+      if (!artistIds.length) return;
+      const r = await fetch(`${SPOTIFY_BASE}/artists?ids=${artistIds.join(',')}`, { headers: { 'Authorization': 'Bearer ' + token } });
+      const d = await r.json();
+      const newGenres = (d.artists || []).flatMap(a => a.genres || []);
+      const available = new Set(S.genreSeeds);
+      for (const g of newGenres) {
+        if (available.has(g) && !S.frontierGenres.includes(g)) {
+          S.frontierGenres.push(g);
+        }
+      }
+      if (S.frontierGenres.length > 30) S.frontierGenres = S.frontierGenres.slice(-30);
+    } catch {}
+  },
+
   async getRecsForProfile() {
     if (!S.audioProfile || S.audioProfile.count < 3) return [];
     const token = await this._getToken();
     if (!token) return [];
     try {
+      // Ensure genre seeds are loaded
+      await this.loadGenreSeeds();
+
+      // Resolve top liked artists to Spotify IDs (up to 2)
       const topArtists = Object.entries(S.taste.artists || {})
-        .sort((a, b) => b[1].liked - a[1].liked).slice(0, 3).map(([a]) => a);
+        .sort((a, b) => b[1].liked - a[1].liked).slice(0, 2).map(([a]) => a);
       const artistIds = [];
       for (const a of topArtists) {
         await sleep(100);
@@ -1354,21 +1420,35 @@ const SpotifyEngine = {
           if (id) artistIds.push(id);
         } catch {}
       }
-      if (!artistIds.length) return [];
+
+      // Build seed mix: artists + EveryNoise genre seeds (total ≤ 5)
+      const genreSeedList = this._profileToGenreSeeds(3);
+      const totalSeeds = artistIds.length + genreSeedList.length;
+      if (!totalSeeds) return [];
+
       const { energy, valence, tempo } = S.audioProfile;
       const params = new URLSearchParams({
-        seed_artists: artistIds.slice(0, 3).join(','), limit: '12',
-        target_energy:  energy.mean.toFixed(3),  target_valence: valence.mean.toFixed(3),
+        limit: '15',
+        target_energy:  energy.mean.toFixed(3),
+        target_valence: valence.mean.toFixed(3),
         target_tempo:   Math.round(tempo.mean),
         min_energy:     Math.max(0, energy.mean  - 2 * energy.std).toFixed(3),
         max_energy:     Math.min(1, energy.mean  + 2 * energy.std).toFixed(3),
         min_valence:    Math.max(0, valence.mean - 2 * valence.std).toFixed(3),
         max_valence:    Math.min(1, valence.mean + 2 * valence.std).toFixed(3),
       });
+      if (artistIds.length)   params.set('seed_artists', artistIds.slice(0, 2).join(','));
+      if (genreSeedList.length) params.set('seed_genres', genreSeedList.slice(0, 5 - artistIds.length).join(','));
+
       const r = await fetch(`${SPOTIFY_BASE}/recommendations?${params}`, { headers: { 'Authorization': 'Bearer ' + token } });
       const d = await r.json();
+      const spTracks = d.tracks || [];
+
+      // Extend genre frontier from this batch's artists (async, non-blocking)
+      this._extendGenreFrontier(spTracks, token);
+
       const result = [];
-      for (const sp of (d.tracks || []).slice(0, 10)) {
+      for (const sp of spTracks.slice(0, 12)) {
         await sleep(150);
         try {
           const artistName = sp.artists?.[0]?.name || '';
@@ -1378,7 +1458,7 @@ const SpotifyEngine = {
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
           if (t.pop > RARE_POP_MAX) continue;
           const ck = t.isrc || `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
-          if (!S.spotifyCache[ck]) S.spotifyCache[ck] = { energy: sp.energy || energy.mean, valence: sp.valence || valence.mean, tempo: sp.tempo || tempo.mean, ts: Date.now() };
+          if (!S.spotifyCache[ck]) S.spotifyCache[ck] = { energy: energy.mean, valence: valence.mean, tempo: tempo.mean, ts: Date.now() };
           t._src = 'spotify_rec';
           result.push(t);
         } catch {}
