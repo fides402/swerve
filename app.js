@@ -1705,6 +1705,27 @@ const Queue = {
           return true;
         });
 
+      // Novelty guarantee: ensure at least 2 slots go to artists never seen before.
+      // Pull them from the bottom of the scored list (lower score but truly new artists)
+      // and inject them so discovery is always present regardless of scoring outcome.
+      if (unique.length >= 4) {
+        const knownArtists = new Set([
+          ...S.myLiked.map(t => (t.a || '').toLowerCase().trim()),
+          ...S.recentArtists
+        ]);
+        const novelSlots = scored
+          .map(s => s.t)
+          .filter(t => {
+            const ak2 = (t.a || '').toLowerCase().trim();
+            return ak2 && !knownArtists.has(ak2) && !unique.slice(0, 4).some(u => u.tidalId === t.tidalId);
+          })
+          .slice(0, 2);
+        // Insert novelty tracks at positions 3 and 5 (not first, not last)
+        if (novelSlots.length) {
+          unique.splice(2, 0, ...novelSlots);
+        }
+      }
+
       // Plan B: record cooldown for each artist entering the queue
       for (const t of unique) {
         const ak2 = (t.a || '').toLowerCase().trim();
