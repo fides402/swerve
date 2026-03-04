@@ -254,6 +254,7 @@ const S = {
   dislikeVec: {},           // cumulative feature vector of skipped tracks (Plan E)
   dislikeTotal: 0,          // normalization counter for dislikeVec
   artistCooldown: {},       // artistKey → timestamp of last queue appearance (Plan B)
+  frontierTracks: [],       // recently surfaced tracks used as seeds for constellation chaining
 
   // Player
   audio: new Audio(),
@@ -325,9 +326,10 @@ function saveState() {
       lfmSecret:     S.lfmSecret,
       lfmSessionKey: S.lfmSessionKey,
       lfmUsername:   S.lfmUsername,
-      dislikeVec:    S.dislikeVec,
-      dislikeTotal:  S.dislikeTotal,
+      dislikeVec:     S.dislikeVec,
+      dislikeTotal:   S.dislikeTotal,
       artistCooldown: S.artistCooldown,
+      frontierTracks: S.frontierTracks.slice(-10),
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -359,6 +361,7 @@ function loadState() {
     S.dislikeVec     = d.dislikeVec     || {};
     S.dislikeTotal   = d.dislikeTotal   || 0;
     S.artistCooldown = d.artistCooldown || {};
+    S.frontierTracks = d.frontierTracks || [];
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -1435,8 +1438,8 @@ const Taste = {
   shouldFilter(track) {
     const a = normalizeArtist(track.a);
     const pref = S.taste.artists[a];
-    // Filter if artist has 3+ skips and 0 likes
-    if (pref && pref.skipped >= 3 && pref.liked === 0) return true;
+    // Block if skips heavily outweigh likes (3 skips + no likes, or skips > 2× likes)
+    if (pref && pref.skipped >= 3 && pref.skipped > (pref.liked || 0) * 2) return true;
     return false;
   },
 
@@ -1535,8 +1538,12 @@ const Queue = {
       // then search Tidal for those tracks. Far more targeted than Tidal's
       // generic recommendation black-box.
       if (!forceSeedId && S.myLiked.length >= 2) {
-        // PATH 1 — track.getSimilar on weighted sample of liked tracks
-        const recentLiked = _weightedSeedSample(7); // Plan A: weighted across full liked set
+        // PATH 1 — track.getSimilar on liked tracks + frontier tracks (constellation chaining)
+        // Frontier seeds = recently surfaced tracks not yet liked → extend the graph hop by hop
+        const likedSeeds = _weightedSeedSample(5);
+        const frontierSeeds = S.frontierTracks.slice(-4)
+          .filter(f => !likedSeeds.some(l => l.tidalId === f.tidalId));
+        const recentLiked = [...likedSeeds, ...frontierSeeds];
         for (const liked of recentLiked) {
           await sleep(200);
           try {
@@ -1703,6 +1710,11 @@ const Queue = {
         const ak2 = (t.a || '').toLowerCase().trim();
         if (ak2) S.artistCooldown[ak2] = Date.now();
       }
+      // Frontier: store surfaced tracks as future constellation seeds
+      for (const t of unique.slice(0, 4)) {
+        if (!S.frontierTracks.some(f => f.tidalId === t.tidalId)) S.frontierTracks.push(t);
+      }
+      if (S.frontierTracks.length > 12) S.frontierTracks = S.frontierTracks.slice(-12);
       S.queue.push(...unique);
       updateQueueCounter();
       showDiscoverCards();
@@ -2241,6 +2253,10 @@ function _checkListenSignal(track, fullListen = false) {
     const dv = FeatureVec.build(track);
     for (const k in dv) S.dislikeVec[k] = (S.dislikeVec[k] || 0) + dv[k];
     S.dislikeTotal = (S.dislikeTotal || 0) + 1;
+    // Remove from frontier so skipped tracks don't seed constellation chains
+    S.frontierTracks = S.frontierTracks.filter(
+      f => f.tidalId !== track.tidalId && f.isrc !== track.isrc
+    );
     saveState();
   }
 }
