@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'fs';
 
-const content = readFileSync('C:/Users/User/Downloads/liked.csv', 'utf8');
+const content = readFileSync('./spreadsheet.csv', 'utf8');
 const lines = content.trim().split('\n');
 
 function parseCSVLine(line) {
@@ -43,6 +43,6 @@ for (let i = 1; i < lines.length; i++) {
 const withPreview = tracks.filter(t => t.pre).length;
 console.error(`Tracks: ${tracks.length}, With preview: ${withPreview}`);
 const json = JSON.stringify(tracks);
-console.error(`JSON size: ${json.length} bytes / ${Math.round(json.length/1024)}KB`);
-writeFileSync('C:/Users/User/Downloads/neu/tracks-data.json', json);
+console.error(`JSON size: ${json.length} bytes / ${Math.round(json.length / 1024)}KB`);
+writeFileSync('./tracks-data.json', json);
 console.log('Done');

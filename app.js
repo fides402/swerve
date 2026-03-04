@@ -6,79 +6,82 @@
 'use strict';
 
 // ─── CONFIG ───────────────────────────────────────────────────────
-const API_BASE        = 'https://api.monochrome.tf';
-const TIDAL_IMG       = 'https://resources.tidal.com/images';
-const DISCOGS_BASE    = 'https://api.discogs.com';
-const DISCOGS_TOKEN   = 'fvYYQHvhAEHVshXGPHYtbAWSlTUNQpnNJcBBbYCB';
+const API_BASE = 'https://api.monochrome.tf';
+const TIDAL_IMG = 'https://resources.tidal.com/images';
+const DISCOGS_BASE = 'https://api.discogs.com';
+const DISCOGS_TOKEN = 'fvYYQHvhAEHVshXGPHYtbAWSlTUNQpnNJcBBbYCB';
 const QUEUE_REFILL_AT = 20;
-const QUEUE_TARGET    = 60;
-const API_TIMEOUT     = 9000;
-const RARE_POP_MAX    = 40;  // filter out mainstream hits (pop > this)
+const QUEUE_TARGET = 60;
+const API_TIMEOUT = 9000;
+const RARE_POP_MAX = 40;  // filter out mainstream hits (pop > this)
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
-const LASTFM_KEY      = 'acd1fbf80c19d2febdf1bf378293eedf';
-const LASTFM_SECRET   = 'acd1fbf80c19d2febdf1bf378293eedf';
+const LASTFM_KEY = 'acd1fbf80c19d2febdf1bf378293eedf';
+const LASTFM_SECRET = 'acd1fbf80c19d2febdf1bf378293eedf';
 const SPOTIFY_CLIENT_ID = '5d04043e27d04cee91b233ab4e7791fc';
-const SPOTIFY_SECRET    = '14dce712909a4311986a2c86dfae9848';
-const SPOTIFY_BASE      = 'https://api.spotify.com/v1';
-const SPOTIFY_AUTH      = 'https://accounts.spotify.com/api/token';
-const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
+const SPOTIFY_SECRET = '14dce712909a4311986a2c86dfae9848';
+const SPOTIFY_BASE = 'https://api.spotify.com/v1';
+const SPOTIFY_AUTH = 'https://accounts.spotify.com/api/token';
+const LASTFM_BASE = 'https://ws.audioscrobbler.com';
 const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
 const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
-const MB_BASE   = 'https://musicbrainz.org/ws/2';
-const MB_UA     = 'Swerve/1.0 (https://github.com/fides402/swerve)';
-const LB_BASE   = 'https://api.listenbrainz.org/1';
+const MB_BASE = 'https://musicbrainz.org/ws/2';
+const MB_UA = 'Swerve/1.0 (https://github.com/fides402/swerve)';
+const LB_BASE = 'https://api.listenbrainz.org/1';
+const GEMINI_API_KEY = 'AIzaSyDPJwhIY4J0Q0UEK1U6haPg_Xkf6OHpJV8';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 // ─── COUNTRY LIST (for picker) ───────────────────────────────────────────────
 const COUNTRIES = [
-  { name: 'Algeria',        flag: '🇩🇿', val: 'Algeria' },
-  { name: 'Argentina',      flag: '🇦🇷', val: 'Argentina' },
-  { name: 'Australia',      flag: '🇦🇺', val: 'Australia' },
-  { name: 'Austria',        flag: '🇦🇹', val: 'Austria' },
-  { name: 'Belgium',        flag: '🇧🇪', val: 'Belgium' },
-  { name: 'Brazil',         flag: '🇧🇷', val: 'Brazil' },
-  { name: 'Bulgaria',       flag: '🇧🇬', val: 'Bulgaria' },
-  { name: 'Canada',         flag: '🇨🇦', val: 'Canada' },
-  { name: 'Chile',          flag: '🇨🇱', val: 'Chile' },
-  { name: 'Colombia',       flag: '🇨🇴', val: 'Colombia' },
-  { name: 'Cuba',           flag: '🇨🇺', val: 'Cuba' },
+  { name: 'Algeria', flag: '🇩🇿', val: 'Algeria' },
+  { name: 'Argentina', flag: '🇦🇷', val: 'Argentina' },
+  { name: 'Australia', flag: '🇦🇺', val: 'Australia' },
+  { name: 'Austria', flag: '🇦🇹', val: 'Austria' },
+  { name: 'Belgium', flag: '🇧🇪', val: 'Belgium' },
+  { name: 'Brazil', flag: '🇧🇷', val: 'Brazil' },
+  { name: 'Bulgaria', flag: '🇧🇬', val: 'Bulgaria' },
+  { name: 'Canada', flag: '🇨🇦', val: 'Canada' },
+  { name: 'Chile', flag: '🇨🇱', val: 'Chile' },
+  { name: 'Colombia', flag: '🇨🇴', val: 'Colombia' },
+  { name: 'Cuba', flag: '🇨🇺', val: 'Cuba' },
   { name: 'Czechoslovakia', flag: '🇨🇿', val: 'Czechoslovakia' },
-  { name: 'Denmark',        flag: '🇩🇰', val: 'Denmark' },
-  { name: 'Egypt',          flag: '🇪🇬', val: 'Egypt' },
-  { name: 'Ethiopia',       flag: '🇪🇹', val: 'Ethiopia' },
-  { name: 'Finland',        flag: '🇫🇮', val: 'Finland' },
-  { name: 'France',         flag: '🇫🇷', val: 'France' },
-  { name: 'Germany',        flag: '🇩🇪', val: 'Germany' },
-  { name: 'Ghana',          flag: '🇬🇭', val: 'Ghana' },
-  { name: 'Greece',         flag: '🇬🇷', val: 'Greece' },
-  { name: 'Hungary',        flag: '🇭🇺', val: 'Hungary' },
-  { name: 'India',          flag: '🇮🇳', val: 'India' },
-  { name: 'Iran',           flag: '🇮🇷', val: 'Iran' },
-  { name: 'Israel',         flag: '🇮🇱', val: 'Israel' },
-  { name: 'Italy',          flag: '🇮🇹', val: 'Italy' },
-  { name: 'Jamaica',        flag: '🇯🇲', val: 'Jamaica' },
-  { name: 'Japan',          flag: '🇯🇵', val: 'Japan' },
-  { name: 'Kenya',          flag: '🇰🇪', val: 'Kenya' },
-  { name: 'Lebanon',        flag: '🇱🇧', val: 'Lebanon' },
-  { name: 'Mexico',         flag: '🇲🇽', val: 'Mexico' },
-  { name: 'Morocco',        flag: '🇲🇦', val: 'Morocco' },
-  { name: 'Netherlands',    flag: '🇳🇱', val: 'Netherlands' },
-  { name: 'Nigeria',        flag: '🇳🇬', val: 'Nigeria' },
-  { name: 'Norway',         flag: '🇳🇴', val: 'Norway' },
-  { name: 'Peru',           flag: '🇵🇪', val: 'Peru' },
-  { name: 'Poland',         flag: '🇵🇱', val: 'Poland' },
-  { name: 'Portugal',       flag: '🇵🇹', val: 'Portugal' },
-  { name: 'Romania',        flag: '🇷🇴', val: 'Romania' },
-  { name: 'Senegal',        flag: '🇸🇳', val: 'Senegal' },
-  { name: 'South Africa',   flag: '🇿🇦', val: 'South Africa' },
-  { name: 'South Korea',    flag: '🇰🇷', val: 'South Korea' },
-  { name: 'Spain',          flag: '🇪🇸', val: 'Spain' },
-  { name: 'Sweden',         flag: '🇸🇪', val: 'Sweden' },
-  { name: 'Switzerland',    flag: '🇨🇭', val: 'Switzerland' },
-  { name: 'Turkey',         flag: '🇹🇷', val: 'Turkey' },
-  { name: 'UK',             flag: '🇬🇧', val: 'UK' },
-  { name: 'US',             flag: '🇺🇸', val: 'US' },
-  { name: 'Venezuela',      flag: '🇻🇪', val: 'Venezuela' },
-  { name: 'Yugoslavia',     flag: '🇷🇸', val: 'Yugoslavia' },
+  { name: 'Denmark', flag: '🇩🇰', val: 'Denmark' },
+  { name: 'Egypt', flag: '🇪🇬', val: 'Egypt' },
+  { name: 'Ethiopia', flag: '🇪🇹', val: 'Ethiopia' },
+  { name: 'Finland', flag: '🇫🇮', val: 'Finland' },
+  { name: 'France', flag: '🇫🇷', val: 'France' },
+  { name: 'Germany', flag: '🇩🇪', val: 'Germany' },
+  { name: 'Ghana', flag: '🇬🇭', val: 'Ghana' },
+  { name: 'Greece', flag: '🇬🇷', val: 'Greece' },
+  { name: 'Hungary', flag: '🇭🇺', val: 'Hungary' },
+  { name: 'India', flag: '🇮🇳', val: 'India' },
+  { name: 'Iran', flag: '🇮🇷', val: 'Iran' },
+  { name: 'Israel', flag: '🇮🇱', val: 'Israel' },
+  { name: 'Italy', flag: '🇮🇹', val: 'Italy' },
+  { name: 'Jamaica', flag: '🇯🇲', val: 'Jamaica' },
+  { name: 'Japan', flag: '🇯🇵', val: 'Japan' },
+  { name: 'Kenya', flag: '🇰🇪', val: 'Kenya' },
+  { name: 'Lebanon', flag: '🇱🇧', val: 'Lebanon' },
+  { name: 'Mexico', flag: '🇲🇽', val: 'Mexico' },
+  { name: 'Morocco', flag: '🇲🇦', val: 'Morocco' },
+  { name: 'Netherlands', flag: '🇳🇱', val: 'Netherlands' },
+  { name: 'Nigeria', flag: '🇳🇬', val: 'Nigeria' },
+  { name: 'Norway', flag: '🇳🇴', val: 'Norway' },
+  { name: 'Peru', flag: '🇵🇪', val: 'Peru' },
+  { name: 'Poland', flag: '🇵🇱', val: 'Poland' },
+  { name: 'Portugal', flag: '🇵🇹', val: 'Portugal' },
+  { name: 'Romania', flag: '🇷🇴', val: 'Romania' },
+  { name: 'Senegal', flag: '🇸🇳', val: 'Senegal' },
+  { name: 'South Africa', flag: '🇿🇦', val: 'South Africa' },
+  { name: 'South Korea', flag: '🇰🇷', val: 'South Korea' },
+  { name: 'Spain', flag: '🇪🇸', val: 'Spain' },
+  { name: 'Sweden', flag: '🇸🇪', val: 'Sweden' },
+  { name: 'Switzerland', flag: '🇨🇭', val: 'Switzerland' },
+  { name: 'Turkey', flag: '🇹🇷', val: 'Turkey' },
+  { name: 'UK', flag: '🇬🇧', val: 'UK' },
+  { name: 'US', flag: '🇺🇸', val: 'US' },
+  { name: 'Venezuela', flag: '🇻🇪', val: 'Venezuela' },
+  { name: 'Yugoslavia', flag: '🇷🇸', val: 'Yugoslavia' },
 ];
 
 // ─── CATALOG (from CSV) ───────────────────────────────────────────
@@ -86,10 +89,10 @@ const CATALOG = JSON.parse(document.getElementById('catalog-data').textContent);
 
 // ─── PRESET SESSIONS ──────────────────────────────────────────────
 const PRESETS = {
-  'general':  { id: 'general',  name: 'Generale', emoji: '🎵', seeds: null },
-  'ost-70':   { id: 'ost-70',   name: "OST '70",  emoji: '🎬', seeds: true },
-  'soul-70':  { id: 'soul-70',  name: "Soul '70", emoji: '🎶', seeds: true },
-  'jazz-70':  { id: 'jazz-70',  name: "Jazz '70", emoji: '🎷', seeds: true },
+  'general': { id: 'general', name: 'Generale', emoji: '🎵', seeds: null },
+  'ost-70': { id: 'ost-70', name: "OST '70", emoji: '🎬', seeds: true },
+  'soul-70': { id: 'soul-70', name: "Soul '70", emoji: '🎶', seeds: true },
+  'jazz-70': { id: 'jazz-70', name: "Jazz '70", emoji: '🎷', seeds: true },
 };
 
 // ─── DISCOGS SEARCH CONFIGS PER PRESET ────────────────────────────
@@ -98,100 +101,100 @@ const PRESETS = {
 const DISCOGS_CONFIGS = {
   'ost-70': [
     // g:it — Italian cinema (Giallo, Spaghetti, general)
-    { g:'it', genre:'Stage & Screen', style:'Soundtrack', country:'Italy',  year:'1965-1982' },
-    { g:'it', genre:'Stage & Screen', style:'Score',      country:'Italy',  year:'1965-1982' },
-    { g:'it', genre:'Stage & Screen', style:'Soundtrack', country:'Italy',  year:'1968-1979' },
+    { g: 'it', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Italy', year: '1965-1982' },
+    { g: 'it', genre: 'Stage & Screen', style: 'Score', country: 'Italy', year: '1965-1982' },
+    { g: 'it', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Italy', year: '1968-1979' },
     // g:fr — French (Nouvelle Vague, polar, polar-adjacent)
-    { g:'fr', genre:'Stage & Screen', style:'Soundtrack', country:'France', year:'1963-1981' },
-    { g:'fr', genre:'Stage & Screen', style:'Score',      country:'France', year:'1963-1981' },
+    { g: 'fr', genre: 'Stage & Screen', style: 'Soundtrack', country: 'France', year: '1963-1981' },
+    { g: 'fr', genre: 'Stage & Screen', style: 'Score', country: 'France', year: '1963-1981' },
     // g:de — German (Krimi, library, Neue Deutsche Welle)
-    { g:'de', genre:'Stage & Screen', style:'Soundtrack', country:'Germany',year:'1965-1980' },
-    { g:'de', genre:'Stage & Screen', style:'Score',      country:'Germany',year:'1965-1980' },
+    { g: 'de', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Germany', year: '1965-1980' },
+    { g: 'de', genre: 'Stage & Screen', style: 'Score', country: 'Germany', year: '1965-1980' },
     // g:jp — Japanese (highly specific, very rare on Discogs)
-    { g:'jp', genre:'Stage & Screen', style:'Soundtrack', country:'Japan',  year:'1965-1982' },
-    { g:'jp', genre:'Stage & Screen', style:'Score',      country:'Japan',  year:'1965-1982' },
+    { g: 'jp', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Japan', year: '1965-1982' },
+    { g: 'jp', genre: 'Stage & Screen', style: 'Score', country: 'Japan', year: '1965-1982' },
     // g:es — Spanish & Latin American
-    { g:'es', genre:'Stage & Screen', style:'Soundtrack', country:'Spain',  year:'1963-1981' },
-    { g:'es', genre:'Stage & Screen', style:'Soundtrack', country:'Brazil', year:'1963-1981' },
+    { g: 'es', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Spain', year: '1963-1981' },
+    { g: 'es', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Brazil', year: '1963-1981' },
     // g:eeu — Eastern Europe (hidden gems: Yugoslavia, Poland, Hungary, Czechoslovakia)
-    { g:'eeu', genre:'Stage & Screen', style:'Soundtrack', country:'Yugoslavia',    year:'1963-1981' },
-    { g:'eeu', genre:'Stage & Screen', style:'Soundtrack', country:'Poland',        year:'1963-1981' },
-    { g:'eeu', genre:'Stage & Screen', style:'Soundtrack', country:'Hungary',       year:'1963-1981' },
-    { g:'eeu', genre:'Stage & Screen', style:'Soundtrack', country:'Czechoslovakia',year:'1963-1981' },
+    { g: 'eeu', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Yugoslavia', year: '1963-1981' },
+    { g: 'eeu', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Poland', year: '1963-1981' },
+    { g: 'eeu', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Hungary', year: '1963-1981' },
+    { g: 'eeu', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Czechoslovakia', year: '1963-1981' },
     // g:uk — British & international
-    { g:'uk', genre:'Stage & Screen', style:'Soundtrack', country:'UK', year:'1963-1981' },
-    { g:'uk', genre:'Stage & Screen', style:'Score',      country:'UK', year:'1963-1981' },
+    { g: 'uk', genre: 'Stage & Screen', style: 'Soundtrack', country: 'UK', year: '1963-1981' },
+    { g: 'uk', genre: 'Stage & Screen', style: 'Score', country: 'UK', year: '1963-1981' },
     // g:world — Scandinavia, Turkey, Greece, Argentina
-    { g:'world', genre:'Stage & Screen', style:'Soundtrack', country:'Sweden',    year:'1963-1981' },
-    { g:'world', genre:'Stage & Screen', style:'Soundtrack', country:'Turkey',    year:'1963-1981' },
-    { g:'world', genre:'Stage & Screen', style:'Soundtrack', country:'Argentina', year:'1963-1981' },
+    { g: 'world', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Sweden', year: '1963-1981' },
+    { g: 'world', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Turkey', year: '1963-1981' },
+    { g: 'world', genre: 'Stage & Screen', style: 'Soundtrack', country: 'Argentina', year: '1963-1981' },
     // g:lib — Library music & general Score (no country filter)
-    { g:'lib', genre:'Stage & Screen', style:'Score',      year:'1963-1982' },
-    { g:'lib', genre:'Stage & Screen', style:'Soundtrack', year:'1968-1978' },
+    { g: 'lib', genre: 'Stage & Screen', style: 'Score', year: '1963-1982' },
+    { g: 'lib', genre: 'Stage & Screen', style: 'Soundtrack', year: '1968-1978' },
   ],
 
   'soul-70': [
     // g:deep — Deep Southern Soul, raw gospel-influenced
-    { g:'deep', genre:'Funk / Soul', style:'Southern Soul', year:'1962-1978' },
-    { g:'deep', genre:'Funk / Soul', style:'Soul',          year:'1962-1975' },
+    { g: 'deep', genre: 'Funk / Soul', style: 'Southern Soul', year: '1962-1978' },
+    { g: 'deep', genre: 'Funk / Soul', style: 'Soul', year: '1962-1975' },
     // g:funk — Funk, Deep Funk, hard groove
-    { g:'funk', genre:'Funk / Soul', style:'Funk',       year:'1965-1980' },
-    { g:'funk', genre:'Funk / Soul', style:'Deep Funk',  year:'1965-1980' },
+    { g: 'funk', genre: 'Funk / Soul', style: 'Funk', year: '1965-1980' },
+    { g: 'funk', genre: 'Funk / Soul', style: 'Deep Funk', year: '1965-1980' },
     // g:rnb — R&B and classic crossover
-    { g:'rnb', genre:'Funk / Soul', style:'Rhythm & Blues', year:'1958-1976' },
-    { g:'rnb', genre:'Funk / Soul', style:'Soul',            year:'1963-1979' },
+    { g: 'rnb', genre: 'Funk / Soul', style: 'Rhythm & Blues', year: '1958-1976' },
+    { g: 'rnb', genre: 'Funk / Soul', style: 'Soul', year: '1963-1979' },
     // g:philly — Philly Soul, sweet soul, proto-disco
-    { g:'philly', genre:'Funk / Soul', style:'Soul',  country:'US', year:'1968-1979' },
-    { g:'philly', genre:'Funk / Soul', style:'Disco',              year:'1973-1979' },
+    { g: 'philly', genre: 'Funk / Soul', style: 'Soul', country: 'US', year: '1968-1979' },
+    { g: 'philly', genre: 'Funk / Soul', style: 'Disco', year: '1973-1979' },
     // g:uk — UK Soul, British rare groove
-    { g:'uk', genre:'Funk / Soul', style:'Soul', country:'UK', year:'1965-1980' },
-    { g:'uk', genre:'Funk / Soul',               country:'UK', year:'1965-1980' },
+    { g: 'uk', genre: 'Funk / Soul', style: 'Soul', country: 'UK', year: '1965-1980' },
+    { g: 'uk', genre: 'Funk / Soul', country: 'UK', year: '1965-1980' },
     // g:world — Non Anglo-Saxon soul (Nigeria, Jamaica, Italy, Brazil)
-    { g:'world', genre:'Funk / Soul', country:'Nigeria', year:'1965-1981' },
-    { g:'world', genre:'Funk / Soul', country:'Brazil',  year:'1965-1981' },
-    { g:'world', genre:'Funk / Soul', country:'Jamaica', year:'1965-1981' },
-    { g:'world', genre:'Funk / Soul', country:'Italy',   year:'1965-1981' },
+    { g: 'world', genre: 'Funk / Soul', country: 'Nigeria', year: '1965-1981' },
+    { g: 'world', genre: 'Funk / Soul', country: 'Brazil', year: '1965-1981' },
+    { g: 'world', genre: 'Funk / Soul', country: 'Jamaica', year: '1965-1981' },
+    { g: 'world', genre: 'Funk / Soul', country: 'Italy', year: '1965-1981' },
     // g:jazz-soul — Soul-adjacent jazz crossover
-    { g:'jazz-soul', genre:'Funk / Soul', style:'Soul-Jazz', year:'1962-1980' },
-    { g:'jazz-soul', genre:'Jazz',        style:'Soul-Jazz', year:'1962-1980' },
+    { g: 'jazz-soul', genre: 'Funk / Soul', style: 'Soul-Jazz', year: '1962-1980' },
+    { g: 'jazz-soul', genre: 'Jazz', style: 'Soul-Jazz', year: '1962-1980' },
   ],
 
   'jazz-70': [
     // g:avant — Avant-garde, Free Jazz, outside playing
-    { g:'avant', genre:'Jazz', style:'Avant-garde Jazz', year:'1960-1980' },
-    { g:'avant', genre:'Jazz', style:'Free Jazz',        year:'1960-1980' },
+    { g: 'avant', genre: 'Jazz', style: 'Avant-garde Jazz', year: '1960-1980' },
+    { g: 'avant', genre: 'Jazz', style: 'Free Jazz', year: '1960-1980' },
     // g:modal — Modal, Post Bop (Miles-era influence)
-    { g:'modal', genre:'Jazz', style:'Post Bop', year:'1960-1980' },
-    { g:'modal', genre:'Jazz', style:'Modal',    year:'1960-1980' },
+    { g: 'modal', genre: 'Jazz', style: 'Post Bop', year: '1960-1980' },
+    { g: 'modal', genre: 'Jazz', style: 'Modal', year: '1960-1980' },
     // g:latin — Latin Jazz, Afro-Cuban, Bossa-jazz
-    { g:'latin', genre:'Jazz', style:'Latin Jazz', year:'1960-1980' },
-    { g:'latin', genre:'Jazz', country:'Brazil',   year:'1960-1980' },
-    { g:'latin', genre:'Jazz', country:'Cuba',     year:'1960-1980' },
+    { g: 'latin', genre: 'Jazz', style: 'Latin Jazz', year: '1960-1980' },
+    { g: 'latin', genre: 'Jazz', country: 'Brazil', year: '1960-1980' },
+    { g: 'latin', genre: 'Jazz', country: 'Cuba', year: '1960-1980' },
     // g:jp — Japanese jazz (incredibly rare, underrated)
-    { g:'jp', genre:'Jazz', country:'Japan', year:'1960-1980' },
-    { g:'jp', genre:'Jazz', country:'Japan', year:'1968-1979' },
+    { g: 'jp', genre: 'Jazz', country: 'Japan', year: '1960-1980' },
+    { g: 'jp', genre: 'Jazz', country: 'Japan', year: '1968-1979' },
     // g:eu-south — Italian & Spanish jazz
-    { g:'eu-south', genre:'Jazz', country:'Italy',   year:'1960-1980' },
-    { g:'eu-south', genre:'Jazz', country:'Spain',   year:'1960-1980' },
+    { g: 'eu-south', genre: 'Jazz', country: 'Italy', year: '1960-1980' },
+    { g: 'eu-south', genre: 'Jazz', country: 'Spain', year: '1960-1980' },
     // g:eu-west — French & British jazz
-    { g:'eu-west', genre:'Jazz', country:'France', year:'1960-1980' },
-    { g:'eu-west', genre:'Jazz', country:'UK',     year:'1960-1980' },
+    { g: 'eu-west', genre: 'Jazz', country: 'France', year: '1960-1980' },
+    { g: 'eu-west', genre: 'Jazz', country: 'UK', year: '1960-1980' },
     // g:eu-north — German, Scandinavian, Dutch (ECM territory)
-    { g:'eu-north', genre:'Jazz', country:'Germany', year:'1960-1980' },
-    { g:'eu-north', genre:'Jazz', country:'Sweden',  year:'1960-1980' },
-    { g:'eu-north', genre:'Jazz', country:'Norway',  year:'1960-1980' },
-    { g:'eu-north', genre:'Jazz', country:'Netherlands', year:'1960-1980' },
+    { g: 'eu-north', genre: 'Jazz', country: 'Germany', year: '1960-1980' },
+    { g: 'eu-north', genre: 'Jazz', country: 'Sweden', year: '1960-1980' },
+    { g: 'eu-north', genre: 'Jazz', country: 'Norway', year: '1960-1980' },
+    { g: 'eu-north', genre: 'Jazz', country: 'Netherlands', year: '1960-1980' },
     // g:fusion — Jazz-Funk, Jazz-Rock, crossover groove
-    { g:'fusion', genre:'Jazz', style:'Jazz-Funk',  year:'1965-1980' },
-    { g:'fusion', genre:'Jazz', style:'Jazz-Rock',  year:'1965-1980' },
+    { g: 'fusion', genre: 'Jazz', style: 'Jazz-Funk', year: '1965-1980' },
+    { g: 'fusion', genre: 'Jazz', style: 'Jazz-Rock', year: '1965-1980' },
     // g:eeu — Eastern European jazz (Poland, Yugoslavia, Hungary — extremely rare)
-    { g:'eeu', genre:'Jazz', country:'Poland',      year:'1960-1980' },
-    { g:'eeu', genre:'Jazz', country:'Yugoslavia',  year:'1960-1980' },
-    { g:'eeu', genre:'Jazz', country:'Hungary',     year:'1960-1980' },
+    { g: 'eeu', genre: 'Jazz', country: 'Poland', year: '1960-1980' },
+    { g: 'eeu', genre: 'Jazz', country: 'Yugoslavia', year: '1960-1980' },
+    { g: 'eeu', genre: 'Jazz', country: 'Hungary', year: '1960-1980' },
     // g:world — Africa, Middle East, Asia outside Japan
-    { g:'world', genre:'Jazz', country:'South Africa', year:'1960-1980' },
-    { g:'world', genre:'Jazz', country:'Turkey',       year:'1960-1980' },
-    { g:'world', genre:'Jazz', country:'India',        year:'1960-1980' },
+    { g: 'world', genre: 'Jazz', country: 'South Africa', year: '1960-1980' },
+    { g: 'world', genre: 'Jazz', country: 'Turkey', year: '1960-1980' },
+    { g: 'world', genre: 'Jazz', country: 'India', year: '1960-1980' },
   ],
 };
 
@@ -239,7 +242,7 @@ const S = {
   enrichCache: {},
   // Sparse user profile vector built from liked/skipped feature vectors
   profileVector: {},   // { 'sty:soundtrack': 1.4, 'tag:rare groove': 0.9, … }
-  profileTotal:  0,    // sum of |weights| added (for normalization)
+  profileTotal: 0,    // sum of |weights| added (for normalization)
   // Session-only: timestamp when current player track started (implicit signals)
   listenStart: 0,
   // Stream quality preference (persisted): 'LOW' | 'HIGH' | 'LOSSLESS'
@@ -311,96 +314,96 @@ function saveState() {
       if (Date.now() - S.artistCooldown[k] > 2 * 3600_000) delete S.artistCooldown[k];
     }
     localStorage.setItem('swerve_v2', JSON.stringify({
-      myLiked:        S.myLiked,
-      mySkipped:      [...S.mySkipped],
-      playlists:      S.playlists,
-      taste:          S.taste,
-      tidalCache:     S.tidalCache,
-      seenIds:        [...S.seenIds].slice(-500),
-      volume:         S.volume,
-      shuffle:        S.shuffle,
-      repeat:         S.repeat,
-      recentArtists:  S.recentArtists,
+      myLiked: S.myLiked,
+      mySkipped: [...S.mySkipped],
+      playlists: S.playlists,
+      taste: S.taste,
+      tidalCache: S.tidalCache,
+      seenIds: [...S.seenIds].slice(-500),
+      volume: S.volume,
+      shuffle: S.shuffle,
+      repeat: S.repeat,
+      recentArtists: S.recentArtists,
       discogsWeights: S.discogsWeights,
-      presetSeedCache:S.presetSeedCache,
-      enrichCache:    enrichPruned,
-      profileVector:  S.profileVector,
-      profileTotal:   S.profileTotal,
-      streamQuality:  S.streamQuality,
+      presetSeedCache: S.presetSeedCache,
+      enrichCache: enrichPruned,
+      profileVector: S.profileVector,
+      profileTotal: S.profileTotal,
+      streamQuality: S.streamQuality,
       forcedCountry: S.forcedCountry,
-      mbCache:       _pruneMbCache(S.mbCache),
-      lbUser:        S.lbUser,
-      lbToken:       S.lbToken,
-      lbRecsTs:      S.lbRecsTs,
-      lbRecQueries:  S.lbRecQueries,
-      lfmSecret:     S.lfmSecret,
+      mbCache: _pruneMbCache(S.mbCache),
+      lbUser: S.lbUser,
+      lbToken: S.lbToken,
+      lbRecsTs: S.lbRecsTs,
+      lbRecQueries: S.lbRecQueries,
+      lfmSecret: S.lfmSecret,
       lfmSessionKey: S.lfmSessionKey,
-      lfmUsername:   S.lfmUsername,
-      dislikeVec:     S.dislikeVec,
-      dislikeTotal:   S.dislikeTotal,
+      lfmUsername: S.lfmUsername,
+      dislikeVec: S.dislikeVec,
+      dislikeTotal: S.dislikeTotal,
       artistCooldown: S.artistCooldown,
-      frontierTracks:  S.frontierTracks.slice(-10),
-      genreSeeds:      S.genreSeeds,
-      frontierGenres:  S.frontierGenres.slice(-20),
-      spotifyCache:   Object.fromEntries(
-        Object.entries(S.spotifyCache).filter(([,v]) => Date.now() - (v.ts||0) < 30*86400_000).slice(-800)
+      frontierTracks: S.frontierTracks.slice(-10),
+      genreSeeds: S.genreSeeds,
+      frontierGenres: S.frontierGenres.slice(-20),
+      spotifyCache: Object.fromEntries(
+        Object.entries(S.spotifyCache).filter(([, v]) => Date.now() - (v.ts || 0) < 30 * 86400_000).slice(-800)
       ),
-      audioProfile:   S.audioProfile,
+      audioProfile: S.audioProfile,
     }));
-  } catch(e) { console.warn('save failed', e); }
+  } catch (e) { console.warn('save failed', e); }
 }
 
 function loadState() {
   try {
     const d = JSON.parse(localStorage.getItem('swerve_v2') || '{}');
-    S.myLiked    = d.myLiked    || [];
-    S.mySkipped  = new Set(d.mySkipped  || []);
-    S.playlists  = d.playlists  || [];
-    S.taste      = d.taste      || S.taste;
-    S.tidalCache      = d.tidalCache      || {};
+    S.myLiked = d.myLiked || [];
+    S.mySkipped = new Set(d.mySkipped || []);
+    S.playlists = d.playlists || [];
+    S.taste = d.taste || S.taste;
+    S.tidalCache = d.tidalCache || {};
     S.presetSeedCache = d.presetSeedCache || {};
-    S.discogsWeights  = d.discogsWeights  || {};
-    S.recentArtists   = d.recentArtists   || [];
-    S.enrichCache     = d.enrichCache     || {};
-    S.profileVector   = d.profileVector   || {};
-    S.profileTotal    = d.profileTotal    || 0;
-    S.streamQuality   = d.streamQuality   || 'HIGH';
-    S.forcedCountry  = d.forcedCountry  || null;
-    S.mbCache        = d.mbCache        || {};
-    S.lbUser         = d.lbUser         || null;
-    S.lbToken        = d.lbToken        || null;
-    S.lbRecsTs       = d.lbRecsTs       || 0;
-    S.lbRecQueries   = d.lbRecQueries   || [];
-    S.lfmSecret      = d.lfmSecret      || null;
-    S.lfmSessionKey  = d.lfmSessionKey  || null;
-    S.lfmUsername    = d.lfmUsername    || null;
-    S.dislikeVec     = d.dislikeVec     || {};
-    S.dislikeTotal   = d.dislikeTotal   || 0;
+    S.discogsWeights = d.discogsWeights || {};
+    S.recentArtists = d.recentArtists || [];
+    S.enrichCache = d.enrichCache || {};
+    S.profileVector = d.profileVector || {};
+    S.profileTotal = d.profileTotal || 0;
+    S.streamQuality = d.streamQuality || 'HIGH';
+    S.forcedCountry = d.forcedCountry || null;
+    S.mbCache = d.mbCache || {};
+    S.lbUser = d.lbUser || null;
+    S.lbToken = d.lbToken || null;
+    S.lbRecsTs = d.lbRecsTs || 0;
+    S.lbRecQueries = d.lbRecQueries || [];
+    S.lfmSecret = d.lfmSecret || null;
+    S.lfmSessionKey = d.lfmSessionKey || null;
+    S.lfmUsername = d.lfmUsername || null;
+    S.dislikeVec = d.dislikeVec || {};
+    S.dislikeTotal = d.dislikeTotal || 0;
     S.artistCooldown = d.artistCooldown || {};
-    S.frontierTracks  = d.frontierTracks  || [];
-    S.spotifyCache    = d.spotifyCache    || {};
-    S.audioProfile    = d.audioProfile    || null;
-    S.genreSeeds      = d.genreSeeds      || [];
-    S.frontierGenres  = d.frontierGenres  || [];
-    S.seenIds    = new Set(d.seenIds    || []);
-    S.volume     = d.volume     != null ? d.volume : 0.8;
-    S.shuffle    = d.shuffle    || false;
-    S.repeat     = d.repeat     || 'none';
+    S.frontierTracks = d.frontierTracks || [];
+    S.spotifyCache = d.spotifyCache || {};
+    S.audioProfile = d.audioProfile || null;
+    S.genreSeeds = d.genreSeeds || [];
+    S.frontierGenres = d.frontierGenres || [];
+    S.seenIds = new Set(d.seenIds || []);
+    S.volume = d.volume != null ? d.volume : 0.8;
+    S.shuffle = d.shuffle || false;
+    S.repeat = d.repeat || 'none';
     S.audio.volume = S.volume;
-  } catch(e) { console.warn('load failed', e); }
+  } catch (e) { console.warn('load failed', e); }
 }
 
 // ─── UTILS ────────────────────────────────────────────────────────
 function tidalCover(uuid, size = 640) {
   if (!uuid) return null;
-  return `${TIDAL_IMG}/${uuid.replace(/-/g,'/')}/${size}x${size}.jpg`;
+  return `${TIDAL_IMG}/${uuid.replace(/-/g, '/')}/${size}x${size}.jpg`;
 }
 
 function fmtTime(sec) {
   if (!isFinite(sec) || sec < 0) return '0:00';
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2,'0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function randPick(arr, n = 1) {
@@ -480,40 +483,40 @@ function _passesGenreFilter(track, { presetMode = false } = {}) {
 }
 // ─── MD5 (needed for Last.fm API signature) ────────────────────────────────────────────
 function _md5(input) {
-  const ADD = (x,y) => { const l=(x&0xFFFF)+(y&0xFFFF); return (((x>>16)+(y>>16)+(l>>16))<<16)|(l&0xFFFF); };
-  const ROT = (x,n) => (x<<n)|(x>>>(32-n));
-  const FF  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,(b&c)|(~b&d)),ADD(x,t)),s),b);
-  const GG  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,(b&d)|(c&~d)),ADD(x,t)),s),b);
-  const HH  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,b^c^d),ADD(x,t)),s),b);
-  const II  = (a,b,c,d,x,s,t) => ADD(ROT(ADD(ADD(a,c^(b|~d)),ADD(x,t)),s),b);
+  const ADD = (x, y) => { const l = (x & 0xFFFF) + (y & 0xFFFF); return (((x >> 16) + (y >> 16) + (l >> 16)) << 16) | (l & 0xFFFF); };
+  const ROT = (x, n) => (x << n) | (x >>> (32 - n));
+  const FF = (a, b, c, d, x, s, t) => ADD(ROT(ADD(ADD(a, (b & c) | (~b & d)), ADD(x, t)), s), b);
+  const GG = (a, b, c, d, x, s, t) => ADD(ROT(ADD(ADD(a, (b & d) | (c & ~d)), ADD(x, t)), s), b);
+  const HH = (a, b, c, d, x, s, t) => ADD(ROT(ADD(ADD(a, b ^ c ^ d), ADD(x, t)), s), b);
+  const II = (a, b, c, d, x, s, t) => ADD(ROT(ADD(ADD(a, c ^ (b | ~d)), ADD(x, t)), s), b);
   const str = unescape(encodeURIComponent(input));
-  const m = []; const K = (1<<8)-1;
-  for (let i=0;i<str.length*8;i+=8) m[i>>5]|=(str.charCodeAt(i/8)&K)<<(i%32);
-  m[str.length*8>>5]|=0x80<<((str.length*8)%32);
-  m[(((str.length*8+64)>>>9)<<4)+14]=str.length*8;
-  let [a0,b0,c0,d0]=[1732584193,-271733879,-1732584194,271733878];
-  for (let i=0;i<m.length;i+=16) {
-    let [a,b,c,d]=[a0,b0,c0,d0];
-    a=FF(a,b,c,d,m[i+0],7,-680876936); d=FF(d,a,b,c,m[i+1],12,-389564586); c=FF(c,d,a,b,m[i+2],17,606105819); b=FF(b,c,d,a,m[i+3],22,-1044525330);
-    a=FF(a,b,c,d,m[i+4],7,-176418897); d=FF(d,a,b,c,m[i+5],12,1200080426); c=FF(c,d,a,b,m[i+6],17,-1473231341); b=FF(b,c,d,a,m[i+7],22,-45705983);
-    a=FF(a,b,c,d,m[i+8],7,1770035416); d=FF(d,a,b,c,m[i+9],12,-1958414417); c=FF(c,d,a,b,m[i+10],17,-42063); b=FF(b,c,d,a,m[i+11],22,-1990404162);
-    a=FF(a,b,c,d,m[i+12],7,1804603682); d=FF(d,a,b,c,m[i+13],12,-40341101); c=FF(c,d,a,b,m[i+14],17,-1502002290); b=FF(b,c,d,a,m[i+15],22,1236535329);
-    a=GG(a,b,c,d,m[i+1],5,-165796510); d=GG(d,a,b,c,m[i+6],9,-1069501632); c=GG(c,d,a,b,m[i+11],14,643717713); b=GG(b,c,d,a,m[i+0],20,-373897302);
-    a=GG(a,b,c,d,m[i+5],5,-701558691); d=GG(d,a,b,c,m[i+10],9,38016083); c=GG(c,d,a,b,m[i+15],14,-660478335); b=GG(b,c,d,a,m[i+4],20,-405537848);
-    a=GG(a,b,c,d,m[i+9],5,568446438); d=GG(d,a,b,c,m[i+14],9,-1019803690); c=GG(c,d,a,b,m[i+3],14,-187363961); b=GG(b,c,d,a,m[i+8],20,1163531501);
-    a=GG(a,b,c,d,m[i+13],5,-1444681467); d=GG(d,a,b,c,m[i+2],9,-51403784); c=GG(c,d,a,b,m[i+7],14,1735328473); b=GG(b,c,d,a,m[i+12],20,-1926607734);
-    a=HH(a,b,c,d,m[i+5],4,-378558); d=HH(d,a,b,c,m[i+8],11,-2022574463); c=HH(c,d,a,b,m[i+11],16,1839030562); b=HH(b,c,d,a,m[i+14],23,-35309556);
-    a=HH(a,b,c,d,m[i+1],4,-1530992060); d=HH(d,a,b,c,m[i+4],11,1272893353); c=HH(c,d,a,b,m[i+7],16,-155497632); b=HH(b,c,d,a,m[i+10],23,-1094730640);
-    a=HH(a,b,c,d,m[i+13],4,681279174); d=HH(d,a,b,c,m[i+0],11,-358537222); c=HH(c,d,a,b,m[i+3],16,-722521979); b=HH(b,c,d,a,m[i+6],23,76029189);
-    a=HH(a,b,c,d,m[i+9],4,-640364487); d=HH(d,a,b,c,m[i+12],11,-421815835); c=HH(c,d,a,b,m[i+15],16,530742520); b=HH(b,c,d,a,m[i+2],23,-995338651);
-    a=II(a,b,c,d,m[i+0],6,-198630844); d=II(d,a,b,c,m[i+7],10,1126891415); c=II(c,d,a,b,m[i+14],15,-1416354905); b=II(b,c,d,a,m[i+5],21,-57434055);
-    a=II(a,b,c,d,m[i+12],6,1700485571); d=II(d,a,b,c,m[i+3],10,-1894986606); c=II(c,d,a,b,m[i+10],15,-1051523); b=II(b,c,d,a,m[i+1],21,-2054922799);
-    a=II(a,b,c,d,m[i+8],6,1873313359); d=II(d,a,b,c,m[i+15],10,-30611744); c=II(c,d,a,b,m[i+6],15,-1560198380); b=II(b,c,d,a,m[i+13],21,1309151649);
-    a=II(a,b,c,d,m[i+4],6,-145523070); d=II(d,a,b,c,m[i+11],10,-1120210379); c=II(c,d,a,b,m[i+2],15,718787259); b=II(b,c,d,a,m[i+9],21,-343485551);
-    [a0,b0,c0,d0]=[ADD(a0,a),ADD(b0,b),ADD(c0,c),ADD(d0,d)];
+  const m = []; const K = (1 << 8) - 1;
+  for (let i = 0; i < str.length * 8; i += 8) m[i >> 5] |= (str.charCodeAt(i / 8) & K) << (i % 32);
+  m[str.length * 8 >> 5] |= 0x80 << ((str.length * 8) % 32);
+  m[(((str.length * 8 + 64) >>> 9) << 4) + 14] = str.length * 8;
+  let [a0, b0, c0, d0] = [1732584193, -271733879, -1732584194, 271733878];
+  for (let i = 0; i < m.length; i += 16) {
+    let [a, b, c, d] = [a0, b0, c0, d0];
+    a = FF(a, b, c, d, m[i + 0], 7, -680876936); d = FF(d, a, b, c, m[i + 1], 12, -389564586); c = FF(c, d, a, b, m[i + 2], 17, 606105819); b = FF(b, c, d, a, m[i + 3], 22, -1044525330);
+    a = FF(a, b, c, d, m[i + 4], 7, -176418897); d = FF(d, a, b, c, m[i + 5], 12, 1200080426); c = FF(c, d, a, b, m[i + 6], 17, -1473231341); b = FF(b, c, d, a, m[i + 7], 22, -45705983);
+    a = FF(a, b, c, d, m[i + 8], 7, 1770035416); d = FF(d, a, b, c, m[i + 9], 12, -1958414417); c = FF(c, d, a, b, m[i + 10], 17, -42063); b = FF(b, c, d, a, m[i + 11], 22, -1990404162);
+    a = FF(a, b, c, d, m[i + 12], 7, 1804603682); d = FF(d, a, b, c, m[i + 13], 12, -40341101); c = FF(c, d, a, b, m[i + 14], 17, -1502002290); b = FF(b, c, d, a, m[i + 15], 22, 1236535329);
+    a = GG(a, b, c, d, m[i + 1], 5, -165796510); d = GG(d, a, b, c, m[i + 6], 9, -1069501632); c = GG(c, d, a, b, m[i + 11], 14, 643717713); b = GG(b, c, d, a, m[i + 0], 20, -373897302);
+    a = GG(a, b, c, d, m[i + 5], 5, -701558691); d = GG(d, a, b, c, m[i + 10], 9, 38016083); c = GG(c, d, a, b, m[i + 15], 14, -660478335); b = GG(b, c, d, a, m[i + 4], 20, -405537848);
+    a = GG(a, b, c, d, m[i + 9], 5, 568446438); d = GG(d, a, b, c, m[i + 14], 9, -1019803690); c = GG(c, d, a, b, m[i + 3], 14, -187363961); b = GG(b, c, d, a, m[i + 8], 20, 1163531501);
+    a = GG(a, b, c, d, m[i + 13], 5, -1444681467); d = GG(d, a, b, c, m[i + 2], 9, -51403784); c = GG(c, d, a, b, m[i + 7], 14, 1735328473); b = GG(b, c, d, a, m[i + 12], 20, -1926607734);
+    a = HH(a, b, c, d, m[i + 5], 4, -378558); d = HH(d, a, b, c, m[i + 8], 11, -2022574463); c = HH(c, d, a, b, m[i + 11], 16, 1839030562); b = HH(b, c, d, a, m[i + 14], 23, -35309556);
+    a = HH(a, b, c, d, m[i + 1], 4, -1530992060); d = HH(d, a, b, c, m[i + 4], 11, 1272893353); c = HH(c, d, a, b, m[i + 7], 16, -155497632); b = HH(b, c, d, a, m[i + 10], 23, -1094730640);
+    a = HH(a, b, c, d, m[i + 13], 4, 681279174); d = HH(d, a, b, c, m[i + 0], 11, -358537222); c = HH(c, d, a, b, m[i + 3], 16, -722521979); b = HH(b, c, d, a, m[i + 6], 23, 76029189);
+    a = HH(a, b, c, d, m[i + 9], 4, -640364487); d = HH(d, a, b, c, m[i + 12], 11, -421815835); c = HH(c, d, a, b, m[i + 15], 16, 530742520); b = HH(b, c, d, a, m[i + 2], 23, -995338651);
+    a = II(a, b, c, d, m[i + 0], 6, -198630844); d = II(d, a, b, c, m[i + 7], 10, 1126891415); c = II(c, d, a, b, m[i + 14], 15, -1416354905); b = II(b, c, d, a, m[i + 5], 21, -57434055);
+    a = II(a, b, c, d, m[i + 12], 6, 1700485571); d = II(d, a, b, c, m[i + 3], 10, -1894986606); c = II(c, d, a, b, m[i + 10], 15, -1051523); b = II(b, c, d, a, m[i + 1], 21, -2054922799);
+    a = II(a, b, c, d, m[i + 8], 6, 1873313359); d = II(d, a, b, c, m[i + 15], 10, -30611744); c = II(c, d, a, b, m[i + 6], 15, -1560198380); b = II(b, c, d, a, m[i + 13], 21, 1309151649);
+    a = II(a, b, c, d, m[i + 4], 6, -145523070); d = II(d, a, b, c, m[i + 11], 10, -1120210379); c = II(c, d, a, b, m[i + 2], 15, 718787259); b = II(b, c, d, a, m[i + 9], 21, -343485551);
+    [a0, b0, c0, d0] = [ADD(a0, a), ADD(b0, b), ADD(c0, c), ADD(d0, d)];
   }
-  const H='0123456789abcdef'; let s='';
-  for (const n of [a0,b0,c0,d0]) for (let j=0;j<4;j++) s+=H[(n>>(j*8+4))&0xF]+H[(n>>(j*8))&0xF];
+  const H = '0123456789abcdef'; let s = '';
+  for (const n of [a0, b0, c0, d0]) for (let j = 0; j < 4; j++) s += H[(n >> (j * 8 + 4)) & 0xF] + H[(n >> (j * 8)) & 0xF];
   return s;
 }
 
@@ -524,7 +527,7 @@ function _lfmSig(params, secret) {
 // ─── MUSICBRAINZ ENGINE ─────────────────────────────────────────────
 const MBEngine = {
   async lookup(artist, title, isrc) {
-    const key = ((artist||'').toLowerCase().trim()) + '|' + ((title||'').toLowerCase().trim());
+    const key = ((artist || '').toLowerCase().trim()) + '|' + ((title || '').toLowerCase().trim());
     if (S.mbCache[key]) return S.mbCache[key];
     await sleep(1150);
     try {
@@ -547,7 +550,7 @@ const MBEngine = {
         mbid: rec.id, firstRelease: firstDate,
         country: orig?.country || null,
         label: orig?.['label-info']?.[0]?.label?.name || null,
-        isOriginal: !!(firstDate && orig?.date && firstDate.slice(0,4) === orig.date.slice(0,4)),
+        isOriginal: !!(firstDate && orig?.date && firstDate.slice(0, 4) === orig.date.slice(0, 4)),
         ts: Date.now(),
       };
       S.mbCache[key] = result;
@@ -556,16 +559,16 @@ const MBEngine = {
   },
   async enrichBg() {
     const todo = S.myLiked
-      .filter(t => !S.mbCache[((t.a||'').toLowerCase().trim()) + '|' + ((t.t||'').toLowerCase().trim())])
+      .filter(t => !S.mbCache[((t.a || '').toLowerCase().trim()) + '|' + ((t.t || '').toLowerCase().trim())])
       .slice(0, 3);
-    for (const t of todo) await this.lookup(t.a||'', t.t||'', t.isrc||null);
+    for (const t of todo) await this.lookup(t.a || '', t.t || '', t.isrc || null);
     if (todo.length) {
       saveState();
       const el = $('mb-status');
       if (el) el.textContent = Object.keys(S.mbCache).length + ' release con metadati MusicBrainz';
     }
     const remaining = S.myLiked.filter(
-      t => !S.mbCache[((t.a||'').toLowerCase().trim()) + '|' + ((t.t||'').toLowerCase().trim())]
+      t => !S.mbCache[((t.a || '').toLowerCase().trim()) + '|' + ((t.t || '').toLowerCase().trim())]
     );
     if (remaining.length) setTimeout(() => MBEngine.enrichBg(), 18000);
   }
@@ -579,16 +582,16 @@ const MBEngine = {
 function _tidalMatchOk(expArtist, expTitle, found) {
   if (!found?.id) return false;
   const norm = s => (s || '').toLowerCase().replace(/[^ws]/g, ' ').trim();
-  const tok  = s => norm(s).split(/s+/).filter(w => w.length > 2);
-  const expT   = tok(expTitle);
+  const tok = s => norm(s).split(/s+/).filter(w => w.length > 2);
+  const expT = tok(expTitle);
   const foundT = new Set(tok(found.title || ''));
   if (!expT.length) return true; // single-word title, can't reject
   const hits = expT.filter(w => foundT.has(w)).length;
   if (hits / expT.length >= 0.40) return true;
   // Secondary check: artist match as fallback (catches "Title (Remaster)" variants)
-  const expA   = tok(expArtist);
+  const expA = tok(expArtist);
   const foundA = new Set(tok(found.artist?.name || found.artists?.map(a => a.name).join(' ') || ''));
-  const aHits  = expA.filter(w => foundA.has(w)).length;
+  const aHits = expA.filter(w => foundA.has(w)).length;
   return expA.length > 0 && aHits / expA.length >= 0.5;
 }
 
@@ -645,7 +648,7 @@ const API = {
         if (exact) return exact;
       }
       return items[0];
-    } catch(e) { return null; }
+    } catch (e) { return null; }
   },
 
   async getRecommendations(tidalId) {
@@ -654,7 +657,7 @@ const API = {
       if (!resp.ok) return [];
       const json = await resp.json();
       return json?.data?.items || [];
-    } catch(e) { return []; }
+    } catch (e) { return []; }
   },
 
   async getStreamUrl(tidalId, quality = 'HIGH') {
@@ -672,7 +675,7 @@ const API = {
       try {
         const bts = JSON.parse(decoded);
         if (bts.urls && bts.urls.length) return bts.urls[0];
-      } catch(_) {}
+      } catch (_) { }
 
       // Try DASH/MPD XML format
       if (decoded.includes('<MPD') || decoded.includes('<?xml')) {
@@ -686,7 +689,7 @@ const API = {
         if (init) return init;
       }
       return null;
-    } catch(e) { return null; }
+    } catch (e) { return null; }
   },
 
   async getLyrics(tidalId) {
@@ -695,7 +698,7 @@ const API = {
       if (!resp.ok) return null;
       const json = await resp.json();
       return json?.data || null;
-    } catch(e) { return null; }
+    } catch (e) { return null; }
   },
 
   async getInfo(tidalId) {
@@ -704,7 +707,7 @@ const API = {
       if (!resp.ok) return null;
       const json = await resp.json();
       return json?.data || null;
-    } catch(e) { return null; }
+    } catch (e) { return null; }
   }
 };
 
@@ -744,7 +747,7 @@ function discogsFetch(url, ms = 12000) {
 // Tracks go straight into the queue (no Tidal recommendation step),
 // which guarantees the correct genre is preserved.
 const DiscogsEngine = {
-  _cache:       {},  // 'artist|title' → { id, art, ... } | null
+  _cache: {},  // 'artist|title' → { id, art, ... } | null
   _lastCfgUsed: {},  // 'presetId' → cfgIdx used in last getTracks call (for feedback)
 
   // Call when user likes a Discogs track — boosts that config's weight
@@ -771,7 +774,7 @@ const DiscogsEngine = {
 
     // ── 1. Group configs by `g`, apply per-config weights ──────────────
     const weights = S.discogsWeights[presetId] || {};
-    const MIN_W   = 3; // every config keeps at minimum this weight
+    const MIN_W = 3; // every config keeps at minimum this weight
     const byGroup = {}; // g → [{ idx, w }]
     configs.forEach((cfg, idx) => {
       (byGroup[cfg.g] = byGroup[cfg.g] || []).push({
@@ -784,7 +787,7 @@ const DiscogsEngine = {
     // 3 distinct "worlds" (e.g. Italian + Eastern European + Japanese).
     const groupKeys = Object.keys(byGroup).sort(() => Math.random() - 0.5);
     const cfgArr = groupKeys.slice(0, 3).map(gk => {
-      const pool  = byGroup[gk];
+      const pool = byGroup[gk];
       const total = pool.reduce((s, x) => s + x.w, 0);
       let r = Math.random() * total;
       for (const { idx, w } of pool) { r -= w; if (r <= 0) return idx; }
@@ -797,7 +800,7 @@ const DiscogsEngine = {
 
     for (const cfgIdx of cfgArr) {
       if (tracks.length >= count) break;
-      const cfg  = configs[cfgIdx];
+      const cfg = configs[cfgIdx];
       // Bias toward earlier pages (higher want-count = more sought-after releases)
       // 65% → pages 1-8 (sweet spot of obscure-but-findable), 35% → pages 9-25 (deeper discovery)
       const _pageRaw = Math.random() < 0.65
@@ -810,11 +813,11 @@ const DiscogsEngine = {
       const qs = new URLSearchParams({
         type: 'release', per_page: '25', page: String(page), ...sortParams
       });
-      if (cfg.genre)   qs.set('genre',   cfg.genre);
-      if (cfg.style)   qs.set('style',   cfg.style);
+      if (cfg.genre) qs.set('genre', cfg.genre);
+      if (cfg.style) qs.set('style', cfg.style);
       const country = S.forcedCountry || cfg.country;
       if (country) qs.set('country', country);
-      if (cfg.year)    qs.set('year',    cfg.year);
+      if (cfg.year) qs.set('year', cfg.year);
 
       let releases = [];
       try {
@@ -841,9 +844,9 @@ const DiscogsEngine = {
         try {
           const dr = await discogsFetch(`${DISCOGS_BASE}/releases/${rel.id}`);
           if (!dr.ok) continue;
-          const detail    = await dr.json();
-          const relAlbum  = detail.title || rel.title || '';
-          const relYear   = String(detail.year || rel.year || '').slice(0, 4);
+          const detail = await dr.json();
+          const relAlbum = detail.title || rel.title || '';
+          const relYear = String(detail.year || rel.year || '').slice(0, 4);
           const relArtist = detail.artists?.[0]?.name?.replace(/\s*\(\d+\)$/, '') || '';
 
           // Shuffle tracklist — don't always surface track 1
@@ -855,23 +858,23 @@ const DiscogsEngine = {
           for (const track of tracklist) {
             if (tracks.length >= count) break;
             const artist = track.artists?.[0]?.name?.replace(/\s*\(\d+\)$/, '') || relArtist;
-            const key    = `${artist}|${track.title}`;
+            const key = `${artist}|${track.title}`;
 
             if (this._cache[key] === null) continue; // known miss on Tidal
 
             let cached = this._cache[key];
             if (!cached) {
               await sleep(130);
-              const q     = artist ? `${track.title} ${artist}` : track.title;
+              const q = artist ? `${track.title} ${artist}` : track.title;
               const found = await API.search(q, null);
               if (found?.id && _tidalMatchOk(artist, track.title, found)) {
                 cached = {
-                  id:   found.id,
-                  art:  tidalCover(found.album?.cover) || null,
-                  d:    (found.duration || 0) * 1000,
+                  id: found.id,
+                  art: tidalCover(found.album?.cover) || null,
+                  d: (found.duration || 0) * 1000,
                   isrc: found.isrc || '',
-                  al:   found.album?.title || relAlbum,
-                  y:    (found.album?.releaseDate || relYear || '').slice(0, 4),
+                  al: found.album?.title || relAlbum,
+                  y: (found.album?.releaseDate || relYear || '').slice(0, 4),
                 };
                 this._cache[key] = cached;
               } else {
@@ -881,31 +884,31 @@ const DiscogsEngine = {
             }
             if (!cached || tracks.some(t => t.tidalId === cached.id)) continue;
 
-            const artistKey      = artist.toLowerCase().trim();
+            const artistKey = artist.toLowerCase().trim();
             const ARTIST_COOLDOWN = 60;
-            const cooldownPos     = S.recentArtists.indexOf(artistKey);
+            const cooldownPos = S.recentArtists.indexOf(artistKey);
             if (cooldownPos !== -1 && cooldownPos < ARTIST_COOLDOWN) continue;
             if ((artistCount[artistKey] || 0) >= 2) continue;
             artistCount[artistKey] = (artistCount[artistKey] || 0) + 1;
 
             tracks.push({
-              tidalId:  cached.id,
-              t:        track.title,
-              a:        artist,
-              al:       cached.al || relAlbum,
-              y:        cached.y  || relYear,
-              art:      cached.art,
-              pre:      null,
-              d:        cached.d,
-              isrc:     cached.isrc,
-              pop:      0,
-              sid:      null,
-              source:   'discogs',
+              tidalId: cached.id,
+              t: track.title,
+              a: artist,
+              al: cached.al || relAlbum,
+              y: cached.y || relYear,
+              art: cached.art,
+              pre: null,
+              d: cached.d,
+              isrc: cached.isrc,
+              pop: 0,
+              sid: null,
+              source: 'discogs',
               // Discogs metadata — used by FeatureVec for scoring & profile updates
-              _styles:  detail.styles  || [],
-              _genres:  detail.genres  || [],
+              _styles: detail.styles || [],
+              _genres: detail.genres || [],
               _country: detail.country || cfg.country || null,
-              _labels:  (detail.labels || []).slice(0, 3).map(l => l.name || ''),
+              _labels: (detail.labels || []).slice(0, 3).map(l => l.name || ''),
             });
 
             // Rolling artist cooldown — move to front so the 60-slot window is accurate
@@ -929,7 +932,7 @@ const EnrichEngine = {
   // Fetch Last.fm top tags for artist+title → [{n, w}]
   async _lfmTags(artist, title) {
     try {
-      const SKIP = new Set(['seen live','favorites','favourite','love','00s','10s','20s','mp3']);
+      const SKIP = new Set(['seen live', 'favorites', 'favourite', 'love', '00s', '10s', '20s', 'mp3']);
       const qs = new URLSearchParams({
         method: 'track.getTopTags', artist, track: title,
         api_key: LASTFM_KEY, format: 'json', autocorrect: '1'
@@ -946,7 +949,7 @@ const EnrichEngine = {
 
   // Get (or fetch + cache) enrichment for a track
   async getFeatures(artist, title) {
-    const key = `${(artist||'').toLowerCase().trim()}|${(title||'').toLowerCase().trim()}`;
+    const key = `${(artist || '').toLowerCase().trim()}|${(title || '').toLowerCase().trim()}`;
     if (S.enrichCache[key]) return S.enrichCache[key];
     const tags = await this._lfmTags(artist, title);
     const entry = { tags, ts: Date.now() };
@@ -957,9 +960,9 @@ const EnrichEngine = {
   // Background enrichment: silently enrich unprocessed liked tracks in small batches
   async enrichLikedBg() {
     const BATCH = 6;
-    const todo = [...S.myLiked, ...CATALOG.slice(0, 60)]
+    const todo = [...S.myLiked, ...CATALOG.slice(0, 300)]
       .filter(t => {
-        const k = `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+        const k = `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
         return !S.enrichCache[k];
       })
       .slice(0, BATCH);
@@ -972,8 +975,8 @@ const EnrichEngine = {
       UserProfile.seedFromLiked(); // update profile as new enrichments arrive
     }
     // Schedule next batch if more remain
-    const remaining = [...S.myLiked, ...CATALOG.slice(0, 60)]
-      .filter(t => !S.enrichCache[`${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`]);
+    const remaining = [...S.myLiked, ...CATALOG.slice(0, 300)]
+      .filter(t => !S.enrichCache[`${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`]);
     if (remaining.length) setTimeout(() => EnrichEngine.enrichLikedBg(), 8000);
   }
 };
@@ -1016,7 +1019,7 @@ const SimilarArtistEngine = {
       .map(([a]) => a);
 
     const likedSet = new Set(S.myLiked.map(t => t.a.toLowerCase().trim()));
-    const simSet   = new Set();
+    const simSet = new Set();
 
     for (const artist of topArtists) {
       await sleep(220);
@@ -1051,7 +1054,7 @@ const SimilarArtistEngine = {
           try {
             const dr = await discogsFetch(`${DISCOGS_BASE}/releases/${rel.id}`);
             if (!dr.ok) continue;
-            const detail    = await dr.json();
+            const detail = await dr.json();
             // Style guardrail: once the profile is mature, only accept releases
             // whose genres/styles overlap with the user's top profile dimensions.
             if (S.profileTotal >= 5) {
@@ -1061,11 +1064,11 @@ const SimilarArtistEngine = {
                 .filter(k => k.startsWith('sty:') || k.startsWith('gen:'))
                 .map(k => k.slice(4));
               if (profStyles.length > 0 && !relStyles.some(rs =>
-                  profStyles.some(ps => rs.includes(ps) || ps.includes(rs))))
+                profStyles.some(ps => rs.includes(ps) || ps.includes(rs))))
                 continue; // wrong genre — skip this release
             }
-            const relAlbum  = detail.title || '';
-            const relYear   = String(detail.year || '').slice(0, 4);
+            const relAlbum = detail.title || '';
+            const relYear = String(detail.year || '').slice(0, 4);
             const relArtist = detail.artists?.[0]?.name?.replace(/s*(d+)$/, '') || artist;
 
             const tracklist = (detail.tracklist || [])
@@ -1075,7 +1078,7 @@ const SimilarArtistEngine = {
 
             for (const track of tracklist) {
               if (added >= maxAdd) break;
-              const ta  = track.artists?.[0]?.name?.replace(/s*(d+)$/, '') || relArtist;
+              const ta = track.artists?.[0]?.name?.replace(/s*(d+)$/, '') || relArtist;
               const key = `${ta}|${track.title}`;
               if (DiscogsEngine._cache[key] === null) continue;
               let cached = DiscogsEngine._cache[key];
@@ -1084,12 +1087,12 @@ const SimilarArtistEngine = {
                 const found = await API.search(`${track.title} ${ta}`, null);
                 if (found?.id && _tidalMatchOk(ta, track.title, found)) {
                   cached = {
-                    id:   found.id,
-                    art:  tidalCover(found.album?.cover) || null,
-                    d:    (found.duration || 0) * 1000,
+                    id: found.id,
+                    art: tidalCover(found.album?.cover) || null,
+                    d: (found.duration || 0) * 1000,
                     isrc: found.isrc || '',
-                    al:   found.album?.title || relAlbum,
-                    y:    (found.album?.releaseDate || relYear || '').slice(0, 4),
+                    al: found.album?.title || relAlbum,
+                    y: (found.album?.releaseDate || relYear || '').slice(0, 4),
                   };
                   DiscogsEngine._cache[key] = cached;
                 } else { DiscogsEngine._cache[key] = null; continue; }
@@ -1103,10 +1106,10 @@ const SimilarArtistEngine = {
                 al: cached.al || relAlbum, y: cached.y || relYear, art: cached.art,
                 pre: null, d: cached.d, isrc: cached.isrc,
                 pop: 0, sid: null, source: 'discogs',
-                _styles:  detail.styles  || [],
-                _genres:  detail.genres  || [],
+                _styles: detail.styles || [],
+                _genres: detail.genres || [],
                 _country: detail.country || null,
-                _labels:  (detail.labels || []).slice(0, 3).map(l => l.name || ''),
+                _labels: (detail.labels || []).slice(0, 3).map(l => l.name || ''),
               });
               added++;
               if (added % 3 === 0) { updateQueueCounter(); showDiscoverCards(); }
@@ -1139,7 +1142,7 @@ const LBEngine = {
   async submitListen(track, listenedAt) {
     if (!S.lbToken || !track) return;
     try {
-      const mbKey = ((track.a||'').toLowerCase().trim()) + '|' + ((track.t||'').toLowerCase().trim());
+      const mbKey = ((track.a || '').toLowerCase().trim()) + '|' + ((track.t || '').toLowerCase().trim());
       await fetch(LB_BASE + '/submit-listens', {
         method: 'POST',
         headers: { 'Authorization': 'Token ' + S.lbToken, 'Content-Type': 'application/json' },
@@ -1157,7 +1160,7 @@ const LBEngine = {
           }]
         })
       });
-    } catch {}
+    } catch { }
   },
 
   // Send now-playing notification
@@ -1169,10 +1172,10 @@ const LBEngine = {
         headers: { 'Authorization': 'Token ' + S.lbToken, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           listen_type: 'playing_now',
-          payload: [{ track_metadata: { artist_name: track.a||'', track_name: track.t||'', release_name: track.al||''} }]
+          payload: [{ track_metadata: { artist_name: track.a || '', track_name: track.t || '', release_name: track.al || '' } }]
         })
       });
-    } catch {}
+    } catch { }
   },
 
   // Fetch collaborative-filtering recommendations for the connected user.
@@ -1198,7 +1201,7 @@ const LBEngine = {
       saveState();
       // Immediately start resolving a few to Tidal tracks
       LBEngine.resolveToTidal(8);
-    } catch {}
+    } catch { }
   },
 
   // Convert lbRecQueries to Tidal tracks (background, non-blocking)
@@ -1217,7 +1220,7 @@ const LBEngine = {
         if (isLiked(t) || hasSeen(t)) continue;
         t._lbMbid = q.mbid;
         S.lbTracks.push(t);
-      } catch {}
+      } catch { }
     }
   }
 };
@@ -1245,29 +1248,29 @@ const LastFMEngine = {
     if (!S.lfmSessionKey || !track) return;
     try {
       const params = {
-        api_key: LASTFM_KEY, artist: track.a||'', duration: String(Math.round((track.d||0)/1000)),
-        method: 'track.updateNowPlaying', sk: S.lfmSessionKey, track: track.t||''
+        api_key: LASTFM_KEY, artist: track.a || '', duration: String(Math.round((track.d || 0) / 1000)),
+        method: 'track.updateNowPlaying', sk: S.lfmSessionKey, track: track.t || ''
       };
       if (track.al) params.album = track.al;
       const sig = _lfmSig(params, LASTFM_SECRET);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
-    } catch {}
+    } catch { }
   },
 
   async scrobble(track, listenedAt) {
     if (!S.lfmSessionKey || !track) return;
     try {
       const params = {
-        api_key: LASTFM_KEY, artist: track.a||'', method: 'track.scrobble',
-        sk: S.lfmSessionKey, timestamp: String(Math.floor((listenedAt||Date.now())/1000)),
-        track: track.t||''
+        api_key: LASTFM_KEY, artist: track.a || '', method: 'track.scrobble',
+        sk: S.lfmSessionKey, timestamp: String(Math.floor((listenedAt || Date.now()) / 1000)),
+        track: track.t || ''
       };
       if (track.al) params.album = track.al;
       const sig = _lfmSig(params, LASTFM_SECRET);
       const body = new URLSearchParams({ ...params, api_sig: sig, format: 'json' });
       await fetch(LASTFM_BASE + '/2.0/', { method: 'POST', body });
-    } catch {}
+    } catch { }
   }
 };
 // ─── SPOTIFY ENGINE ───────────────────────────────────────────────
@@ -1305,12 +1308,12 @@ const SpotifyEngine = {
         const d = await r.json();
         return d.tracks?.items?.[0]?.id || null;
       }
-    } catch {}
+    } catch { }
     return null;
   },
 
   async getFeatures(track) {
-    const ck = track.isrc || `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const ck = track.isrc || `${(track.a || '').toLowerCase().trim()}|${(track.t || '').toLowerCase().trim()}`;
     if (S.spotifyCache[ck]) return S.spotifyCache[ck];
     try {
       const sid = await this._searchId(track);
@@ -1319,19 +1322,24 @@ const SpotifyEngine = {
       const r = await fetch(`${SPOTIFY_BASE}/audio-features/${sid}`, { headers: { 'Authorization': 'Bearer ' + token } });
       const f = await r.json();
       if (!f || f.energy == null) return null;
-      const result = { energy: f.energy, valence: f.valence, tempo: f.tempo,
-                       key: f.key, mode: f.mode, danceability: f.danceability,
-                       acousticness: f.acousticness, instrumentalness: f.instrumentalness,
-                       spotifyId: sid, ts: Date.now() };
+      const result = {
+        energy: f.energy, valence: f.valence, tempo: f.tempo,
+        key: f.key, mode: f.mode, danceability: f.danceability,
+        acousticness: f.acousticness, instrumentalness: f.instrumentalness,
+        spotifyId: sid, ts: Date.now()
+      };
       S.spotifyCache[ck] = result;
       return result;
     } catch { return null; }
   },
 
   async buildProfile() {
-    if (S.myLiked.length < 3) return;
+    // Fall back to catalog tracks if user hasn't scaled up their likes
+    const source = S.myLiked.length >= 3 ? S.myLiked.slice(-25) : randPick(CATALOG, Math.min(25, CATALOG.length)) || [];
+    const sourceArr = Array.isArray(source) ? source : [source];
+    if (sourceArr.length === 0) return;
     const feats = [];
-    for (const t of S.myLiked.slice(-25)) {
+    for (const t of sourceArr) {
       await sleep(120);
       const f = await this.getFeatures(t);
       if (f) feats.push(f);
@@ -1341,9 +1349,9 @@ const SpotifyEngine = {
     const std = (k, m) => Math.sqrt(feats.reduce((s, f) => s + (f[k] - m) ** 2, 0) / feats.length);
     const eM = avg('energy'), vM = avg('valence'), tM = avg('tempo');
     S.audioProfile = {
-      energy:  { mean: eM, std: Math.max(std('energy',  eM), 0.12) },
+      energy: { mean: eM, std: Math.max(std('energy', eM), 0.12) },
       valence: { mean: vM, std: Math.max(std('valence', vM), 0.15) },
-      tempo:   { mean: tM, std: Math.max(std('tempo',   tM), 20)   },
+      tempo: { mean: tM, std: Math.max(std('tempo', tM), 20) },
       count: feats.length
     };
     saveState();
@@ -1351,13 +1359,13 @@ const SpotifyEngine = {
 
   passesFilter(track) {
     if (!S.audioProfile || S.audioProfile.count < 3) return true;
-    const ck = track.isrc || `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const ck = track.isrc || `${(track.a || '').toLowerCase().trim()}|${(track.t || '').toLowerCase().trim()}`;
     const f = S.spotifyCache[ck];
     if (!f) return true;
     const { energy, valence, tempo } = S.audioProfile;
-    return Math.abs(f.energy  - energy.mean)  <= 2.2 * energy.std
-        && Math.abs(f.valence - valence.mean) <= 2.2 * valence.std
-        && Math.abs(f.tempo   - tempo.mean)   <= 2.2 * tempo.std;
+    return Math.abs(f.energy - energy.mean) <= 2.2 * energy.std
+      && Math.abs(f.valence - valence.mean) <= 2.2 * valence.std
+      && Math.abs(f.tempo - tempo.mean) <= 2.2 * tempo.std;
   },
 
   // Fetch and cache all valid EveryNoise/Spotify genre seed names (once per session)
@@ -1413,7 +1421,7 @@ const SpotifyEngine = {
         }
       }
       if (S.frontierGenres.length > 30) S.frontierGenres = S.frontierGenres.slice(-30);
-    } catch {}
+    } catch { }
   },
 
   async getRecsForProfile() {
@@ -1435,7 +1443,7 @@ const SpotifyEngine = {
           const d = await r.json();
           const id = d.artists?.items?.[0]?.id;
           if (id) artistIds.push(id);
-        } catch {}
+        } catch { }
       }
 
       // Build seed mix: artists + EveryNoise genre seeds (total ≤ 5)
@@ -1445,17 +1453,17 @@ const SpotifyEngine = {
 
       const { energy, valence, tempo } = S.audioProfile;
       const params = new URLSearchParams({
-        limit:          '15',
+        limit: '15',
         max_popularity: String(RARE_POP_MAX), // avoid mainstream hits
-        target_energy:  energy.mean.toFixed(3),
+        target_energy: energy.mean.toFixed(3),
         target_valence: valence.mean.toFixed(3),
-        target_tempo:   Math.round(tempo.mean),
-        min_energy:     Math.max(0, energy.mean  - 2 * energy.std).toFixed(3),
-        max_energy:     Math.min(1, energy.mean  + 2 * energy.std).toFixed(3),
-        min_valence:    Math.max(0, valence.mean - 2 * valence.std).toFixed(3),
-        max_valence:    Math.min(1, valence.mean + 2 * valence.std).toFixed(3),
+        target_tempo: Math.round(tempo.mean),
+        min_energy: Math.max(0, energy.mean - 2 * energy.std).toFixed(3),
+        max_energy: Math.min(1, energy.mean + 2 * energy.std).toFixed(3),
+        min_valence: Math.max(0, valence.mean - 2 * valence.std).toFixed(3),
+        max_valence: Math.min(1, valence.mean + 2 * valence.std).toFixed(3),
       });
-      if (artistIds.length)   params.set('seed_artists', artistIds.slice(0, 2).join(','));
+      if (artistIds.length) params.set('seed_artists', artistIds.slice(0, 2).join(','));
       if (genreSeedList.length) params.set('seed_genres', genreSeedList.slice(0, 5 - artistIds.length).join(','));
 
       const r = await fetch(`${SPOTIFY_BASE}/recommendations?${params}`, { headers: { 'Authorization': 'Bearer ' + token } });
@@ -1475,11 +1483,11 @@ const SpotifyEngine = {
           const t = fromTidal(found);
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
           if (t.pop > RARE_POP_MAX) continue;
-          const ck = t.isrc || `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+          const ck = t.isrc || `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
           if (!S.spotifyCache[ck]) S.spotifyCache[ck] = { energy: energy.mean, valence: valence.mean, tempo: tempo.mean, ts: Date.now() };
           t._src = 'spotify_rec';
           result.push(t);
-        } catch {}
+        } catch { }
       }
       return result;
     } catch { return []; }
@@ -1496,24 +1504,24 @@ const FeatureVec = {
     const add = (k, w) => { vec[k] = (vec[k] || 0) + w; };
 
     // Discogs metadata attached to track by DiscogsEngine
-    (track._styles  || []).forEach(s => add(`sty:${s.toLowerCase()}`, 2.0));
-    (track._genres  || []).forEach(g => add(`gen:${g.toLowerCase()}`, 1.5));
-    (track._labels  || []).forEach(l => add(`lbl:${l.toLowerCase()}`, 0.8));
+    (track._styles || []).forEach(s => add(`sty:${s.toLowerCase()}`, 2.0));
+    (track._genres || []).forEach(g => add(`gen:${g.toLowerCase()}`, 1.5));
+    (track._labels || []).forEach(l => add(`lbl:${l.toLowerCase()}`, 0.8));
     if (track._country) add(`ctr:${track._country.toLowerCase()}`, 0.6);
 
     // Last.fm tags from enrichCache
-    const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const ck = `${(track.a || '').toLowerCase().trim()}|${(track.t || '').toLowerCase().trim()}`;
     (S.enrichCache[ck]?.tags || []).forEach(t => add(`tag:${t.n}`, t.w * 1.5));
 
     // Decade — prefer MusicBrainz firstRelease for precision
-    const mbKeyFV = ((track.a||'').toLowerCase().trim()) + '|' + ((track.t||'').toLowerCase().trim());
+    const mbKeyFV = ((track.a || '').toLowerCase().trim()) + '|' + ((track.t || '').toLowerCase().trim());
     const mbFV = S.mbCache[mbKeyFV];
-    const yr = parseInt(mbFV?.firstRelease?.slice(0,4) || track.y);
-    if (yr > 1900) add('dec:' + (Math.floor(yr/10)*10), 1.0);
+    const yr = parseInt(mbFV?.firstRelease?.slice(0, 4) || track.y);
+    if (yr > 1900) add('dec:' + (Math.floor(yr / 10) * 10), 1.0);
 
     // MusicBrainz enrichment: more precise country + label
     if (mbFV?.country) add('ctr:' + mbFV.country.toLowerCase(), 0.5);
-    if (mbFV?.label)   add('lbl:' + mbFV.label.toLowerCase().slice(0,20), 0.35);
+    if (mbFV?.label) add('lbl:' + mbFV.label.toLowerCase().slice(0, 20), 0.35);
 
     return vec;
   },
@@ -1522,7 +1530,7 @@ const FeatureVec = {
   sim(v1, v2) {
     let dot = 0, m1 = 0, m2 = 0;
     for (const k in v1) { m1 += v1[k] ** 2; if (v2[k]) dot += v1[k] * v2[k]; }
-    for (const k in v2)   m2 += v2[k] ** 2;
+    for (const k in v2) m2 += v2[k] ** 2;
     const d = Math.sqrt(m1) * Math.sqrt(m2);
     return d > 0 ? dot / d : 0;
   }
@@ -1531,8 +1539,10 @@ const FeatureVec = {
 // ─── USER PROFILE (online learning) ───────────────────────────────
 // Maintains a sparse feature vector updated in real-time on every swipe/listen.
 const UserProfile = {
-  _W: { like: 1.0, swipe_like: 1.2, playlist: 2.0,
-        listen_long: 0.5, skip_fast: -0.5, dislike: -0.8 },
+  _W: {
+    like: 1.0, swipe_like: 1.2, playlist: 2.0,
+    listen_long: 0.5, skip_fast: -0.5, dislike: -0.8
+  },
 
   update(track, action) {
     const w = this._W[action];
@@ -1562,7 +1572,7 @@ const UserProfile = {
   seedFromLiked() {
     let n = 0;
     for (const t of S.myLiked) {
-      const k = `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+      const k = `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
       if (!S.enrichCache[k]) continue;
       this.update(t, 'like');
       n++;
@@ -1576,31 +1586,31 @@ const UserProfile = {
 // Multi-factor scoring: affinity (40%) + quality (25%) + novelty (20%) + diversity (15%).
 const Scorer = {
   RARE_TAGS: new Set([
-    'rare groove','library music','spiritual jazz','jazz-funk','soul-jazz',
-    'bossa nova','afrobeat','afro soul','ethio-jazz','free jazz','avant-garde',
-    'modal jazz','post-bop','film music','soundtrack','library','easy listening',
-    'psych','psychedelic soul','deep funk','funk','giallo','spaghetti western',
-    'krautrock','groove','rare soul','northern soul','acid jazz'
+    'rare groove', 'library music', 'spiritual jazz', 'jazz-funk', 'soul-jazz',
+    'bossa nova', 'afrobeat', 'afro soul', 'ethio-jazz', 'free jazz', 'avant-garde',
+    'modal jazz', 'post-bop', 'film music', 'soundtrack', 'library', 'easy listening',
+    'psych', 'psychedelic soul', 'deep funk', 'funk', 'giallo', 'spaghetti western',
+    'krautrock', 'groove', 'rare soul', 'northern soul', 'acid jazz'
   ]),
 
   score(track, opts = {}) {
     const profile = UserProfile.get();
-    const vec     = FeatureVec.build(track);
+    const vec = FeatureVec.build(track);
     const hasProf = Object.keys(profile).length > 3;
 
     // 1. Affinity — how well the track matches your taste vector
     const affinity = hasProf ? FeatureVec.sim(profile, vec) : 0.5;
 
     // 2. Quality — rare-grade signals from Last.fm tags
-    const ck = `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const ck = `${(track.a || '').toLowerCase().trim()}|${(track.t || '').toLowerCase().trim()}`;
     const rareCount = (S.enrichCache[ck]?.tags || []).filter(t => this.RARE_TAGS.has(t.n)).length;
-    const mbScorer  = S.mbCache[ck];
+    const mbScorer = S.mbCache[ck];
     const origBonus = mbScorer?.isOriginal === true ? 0.1 : 0;
-    const quality   = Math.min(0.3 + rareCount * 0.12 + origBonus, 1.0);
+    const quality = Math.min(0.3 + rareCount * 0.12 + origBonus, 1.0);
 
     // 3. Novelty — penalise recently surfaced artists
-    const ak  = (track.a || '').toLowerCase().trim();
-    const ri  = S.recentArtists.indexOf(ak);
+    const ak = (track.a || '').toLowerCase().trim();
+    const ri = S.recentArtists.indexOf(ak);
     const novelty = ri === -1 ? 1.0 : Math.max(0.1, 1 - (ri / 60) * 0.9);
 
     // 4. Diversity — distance from the tracks already in the current queue slice
@@ -1625,9 +1635,9 @@ const Scorer = {
       const spFeats = S.spotifyCache[ck];
       if (spFeats) {
         const { energy, valence, tempo } = S.audioProfile;
-        const eAff = Math.max(0, 1 - Math.abs(spFeats.energy  - energy.mean)  / (2 * energy.std));
+        const eAff = Math.max(0, 1 - Math.abs(spFeats.energy - energy.mean) / (2 * energy.std));
         const vAff = Math.max(0, 1 - Math.abs(spFeats.valence - valence.mean) / (2 * valence.std));
-        const tAff = Math.max(0, 1 - Math.abs(spFeats.tempo   - tempo.mean)   / (2 * tempo.std));
+        const tAff = Math.max(0, 1 - Math.abs(spFeats.tempo - tempo.mean) / (2 * tempo.std));
         audioBonus = ((eAff + vAff + tAff) / 3) * 0.12;
       }
     }
@@ -1644,8 +1654,8 @@ const Scorer = {
     // Weights adapt: when the profile is mature (>10 actions), trust affinity more
     const _mature = S.profileTotal > 10;
     const [_aw, _qw, _nw, _dw] = _mature ? [0.60, 0.20, 0.12, 0.08] : [0.40, 0.25, 0.20, 0.15];
-    const raw   = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw
-                  + discoveryBonus + audioBonus - dislikePenalty;
+    const raw = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw
+      + discoveryBonus + audioBonus - dislikePenalty;
     const total = Math.max(0, Math.min(1, raw));
     return { total, affinity, quality, novelty, diversity, vec };
   }
@@ -1675,11 +1685,11 @@ function mmrRerank(scored, n, lambda = 0.7) {
 const Taste = {
   recordLike(track) {
     const a = normalizeArtist(track.a);
-    S.taste.artists[a] = S.taste.artists[a] || { liked:0, skipped:0 };
+    S.taste.artists[a] = S.taste.artists[a] || { liked: 0, skipped: 0 };
     S.taste.artists[a].liked++;
 
     const decade = Math.floor(parseInt(track.y || 2000) / 10) * 10;
-    S.taste.decades[decade] = S.taste.decades[decade] || { liked:0, skipped:0 };
+    S.taste.decades[decade] = S.taste.decades[decade] || { liked: 0, skipped: 0 };
     S.taste.decades[decade].liked++;
 
     if (track.tidalId) {
@@ -1691,7 +1701,7 @@ const Taste = {
       }
       // Keep seeds list manageable
       if (S.taste.seeds.length > 100) {
-        S.taste.seeds.sort((a,b) => b.weight - a.weight);
+        S.taste.seeds.sort((a, b) => b.weight - a.weight);
         S.taste.seeds = S.taste.seeds.slice(0, 60);
       }
     }
@@ -1701,11 +1711,11 @@ const Taste = {
 
   recordSkip(track) {
     const a = normalizeArtist(track.a);
-    S.taste.artists[a] = S.taste.artists[a] || { liked:0, skipped:0 };
+    S.taste.artists[a] = S.taste.artists[a] || { liked: 0, skipped: 0 };
     S.taste.artists[a].skipped++;
 
     const decade = Math.floor(parseInt(track.y || 2000) / 10) * 10;
-    S.taste.decades[decade] = S.taste.decades[decade] || { liked:0, skipped:0 };
+    S.taste.decades[decade] = S.taste.decades[decade] || { liked: 0, skipped: 0 };
     S.taste.decades[decade].skipped++;
     saveState();
   },
@@ -1733,7 +1743,7 @@ const Taste = {
   // Pick best seed tidalIds (weighted random)
   pickSeeds(count = 3) {
     if (S.taste.seeds.length === 0) return [];
-    const seeds = [...S.taste.seeds].sort((a,b) => b.weight - a.weight);
+    const seeds = [...S.taste.seeds].sort((a, b) => b.weight - a.weight);
     const result = [];
     const used = new Set();
     // Top 60% by weight, pick randomly
@@ -1759,271 +1769,124 @@ const Taste = {
   }
 };
 
+// ─── GEMINI ENGINE ────────────────────────────────────────────────
+const GeminiEngine = {
+  async getInteractiveRecs(seeds) {
+    if (!seeds || seeds.length === 0) return [];
+
+    // Pick 5 random tracks to seed the prompt, preferring liked ones
+    const pool = S.myLiked.length >= 3 ? S.myLiked : [...S.myLiked, ...CATALOG.slice(0, 50)];
+    const sample = randPick(pool, Math.min(pool.length, 5));
+    const examples = sample.map(t => `- ${t.t} by ${t.a}`).join('\n');
+
+    const prompt = `Based on these tracks:
+${examples}
+
+Suggest 8 obscure, rare, and highly similar tracks from the 60s, 70s, or 80s (focus on jazz, soul, library music, or soundtracks).
+Do not suggest extremely mainstream tracks.
+Format the output EXACTLY as a JSON array of objects with keys "t" (title) and "a" (artist).
+Example:
+[
+  {"t": "Track Title 1", "a": "Artist 1"},
+  {"t": "Track Title 2", "a": "Artist 2"}
+]
+Output ONLY valid JSON, without any markdown formatting.`;
+
+    try {
+      const resp = await fetch(`${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            responseMimeType: 'application/json',
+          },
+        }),
+      });
+
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]';
+
+      const parsed = JSON.parse(text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim());
+      if (!Array.isArray(parsed)) return [];
+
+      const tracks = [];
+      for (const item of parsed) {
+        if (!item.t || !item.a) continue;
+
+        // Find on Tidal
+        await sleep(150);
+        const searchRes = await API.search(`${item.t} ${item.a}`, null);
+        if (searchRes && _tidalMatchOk(item.a, item.t, searchRes)) {
+          const t = fromTidal(searchRes);
+          t._src = 'gemini';
+          if (!hasSeen(t) && !isLiked(t) && t.pop <= RARE_POP_MAX) {
+            tracks.push(t);
+          }
+        }
+      }
+      return tracks;
+    } catch (e) {
+      console.error("GeminiEngine Error:", e);
+      return [];
+    }
+  }
+};
+
 // ─── RECOMMENDATION QUEUE MANAGER ────────────────────────────────
 const Queue = {
   async refill(forceSeedId = null) {
     if (S.isFetching) return;
     S.isFetching = true;
     try {
-      const preset = PRESETS[S.activePreset];
-
-      // ── PRESET MODE: Discogs → genre-accurate tracks ──────────────
-      if (!forceSeedId && preset?.seeds) {
-        updateSeedInfo(`${preset.emoji} ${preset.name}`);
-        const discogsTracks = await DiscogsEngine.getTracks(S.activePreset, 30);
-        if (discogsTracks.length >= 2) {
-          const seenSet = new Set();
-          const candidates = discogsTracks.filter(t => {
-            if (hasSeen(t) || isLiked(t)) return false;
-            if (seenSet.has(t.tidalId)) return false;
-            if (!_passesGenreFilter(t, { presetMode: true })) return false; // Discogs has own genre logic
-            seenSet.add(t.tidalId);
-            t._src = 'discogs'; // Plan C
-            return true;
-          });
-          // Score + MMR-rerank for variety and taste alignment
-          const recentVecs = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
-          const scored = candidates.map(t => ({ t, sc: Scorer.score(t, { recentVecs }) }));
-          scored.sort((a, b) => b.sc.total - a.sc.total);
-          const reranked = mmrRerank(scored, Math.min(30, scored.length));
-          // Plan B: record artist cooldown for tracks entering queue
-          for (const c of reranked) {
-            const ak2 = (c.t.a || '').toLowerCase().trim();
-            if (ak2) S.artistCooldown[ak2] = Date.now();
-          }
-          S.queue.push(...reranked.map(c => c.t));
-          updateQueueCounter();
-          showDiscoverCards();
-          // In background: add similar-artist tracks from Last.fm → Discogs
-          if (S.profileTotal >= 3) SimilarArtistEngine.fillQueue();
-          return;
-        }
-        // Discogs returned nothing → fall through to Tidal recs
-      }
-
-      // ── GENERAL / FORCE-SEED MODE ─────────────────────────────────
       updateSeedInfo(forceSeedId && S.sessionSeedTrack
         ? `Basato su: ${S.sessionSeedTrack.t}`
-        : 'In base ai tuoi gusti');
+        : 'Nuove scoperte simili ai tuoi gusti');
 
-      const newTracks = [];
+      const queueNeeds = QUEUE_TARGET - S.queue.length;
+      if (queueNeeds <= 0) return;
 
-      // ── PRIMARY (free general mode): Last.fm track.getSimilar ──────
-      // For each recently liked track, ask Last.fm "what is similar?"
-      // then search Tidal for those tracks. Far more targeted than Tidal's
-      // generic recommendation black-box.
-      if (!forceSeedId && S.myLiked.length >= 2) {
-        // PATH 1 — track.getSimilar on liked tracks + frontier tracks (constellation chaining)
-        // Frontier seeds = recently surfaced tracks not yet liked → extend the graph hop by hop
-        const likedSeeds = _weightedSeedSample(5);
-        const frontierSeeds = S.frontierTracks.slice(-4)
-          .filter(f => !likedSeeds.some(l => l.tidalId === f.tidalId));
-        const recentLiked = [...likedSeeds, ...frontierSeeds];
-        for (const liked of recentLiked) {
-          await sleep(200);
-          try {
-            const qs = new URLSearchParams({
-              method: 'track.getSimilar', artist: liked.a, track: liked.t,
-              api_key: LASTFM_KEY, format: 'json', limit: '8', autocorrect: '1'
-            });
-            const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
-            if (!r.ok) continue;
-            const d = await r.json();
-            const similar = d.similartracks?.track || [];
-            for (const st of similar.slice(0, 5)) {
-              await sleep(160);
-              const artistName = typeof st.artist === 'string'
-                ? st.artist : (st.artist?.name || '');
-              const found = await API.search(`${st.name} ${artistName}`, null);
-              if (!_tidalMatchOk(artistName, st.name, found)) continue;
-              const t = fromTidal(found);
-              if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
-              if (t.pop > RARE_POP_MAX) continue;
-              if (!_passesGenreFilter(t)) continue; // Plan D
-              if (!SpotifyEngine.passesFilter(t)) continue;
-              t._src = 'lfm_similar';               // Plan C
-              newTracks.push(t);
-            }
-          } catch { continue; }
-        }
+      const spTracks = await SpotifyEngine.getRecsForProfile();
+      let candidates = CATALOG.filter(t => !hasSeen(t) && !isLiked(t));
 
-        // PATH 2 — artist.getSimilar on top liked artists (full collection aggregated)
-        // S.taste.artists counts likes per artist → top artists = core of taste
-        const topLikedArtists = Object.entries(S.taste.artists || {})
-          .sort((a, b) => b[1].liked - a[1].liked)
-          .slice(0, 4)
-          .map(([a]) => a);
-        for (const artist of topLikedArtists) {
-          await sleep(200);
-          try {
-            const qs = new URLSearchParams({
-              method: 'artist.getSimilar', artist,
-              api_key: LASTFM_KEY, format: 'json', limit: '6', autocorrect: '1'
-            });
-            const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
-            if (!r.ok) continue;
-            const d = await r.json();
-            const simArtists = d.similarartists?.artist || [];
-            for (const sa of simArtists.slice(0, 3)) {
-              await sleep(160);
-              // Get top track by this similar artist from Last.fm, then find on Tidal
-              try {
-                const tqs = new URLSearchParams({
-                  method: 'artist.getTopTracks', artist: sa.name,
-                  api_key: LASTFM_KEY, format: 'json', limit: '3', autocorrect: '1'
-                });
-                const tr = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${tqs}`, API_TIMEOUT);
-                if (!tr.ok) continue;
-                const td = await tr.json();
-                const topTracks = td.toptracks?.track || [];
-                for (const tt of topTracks.slice(0, 2)) {
-                  await sleep(150);
-                  const found = await API.search(`${tt.name} ${sa.name}`, null);
-                  if (!_tidalMatchOk(sa.name, tt.name, found)) continue;
-                  const t = fromTidal(found);
-                  if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
-                  if (t.pop > RARE_POP_MAX) continue;
-                  if (!_passesGenreFilter(t)) continue;
-                  if (!SpotifyEngine.passesFilter(t)) continue;
-                  t._src = 'lfm_artist';
-                  newTracks.push(t);
-                }
-              } catch { continue; }
-            }
-          } catch { continue; }
-        }
+      // Use Spotify tracks primarily. Fallback to catalog ONLY if Spotify fails.
+      let merged = spTracks.filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
+
+      if (merged.length === 0 && candidates.length > 0) {
+        const fallback = randPick(candidates, Math.min(15, queueNeeds));
+        merged = (Array.isArray(fallback) ? fallback : [fallback]).map(t => ({ ...t, _src: 'catalog' })).filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
       }
 
-      // ── SUPPLEMENT / FALLBACK: Tidal recommendations ───────────────
-      let seedIds = [];
-      if (forceSeedId) {
-        seedIds = [forceSeedId];
-      } else {
-        seedIds = await this._likedSeeds(5);
-        if (!seedIds.length) seedIds = await this._catalogSeeds(2);
+      if (merged.length === 0) {
+        showDiscoverEmpty();
+        return;
       }
 
-      if (!forceSeedId && !newTracks.length && !seedIds.length) { showDiscoverEmpty(); return; }
-      if (forceSeedId && !seedIds.length) { showDiscoverEmpty(); return; }
-
-      for (const id of seedIds) {
-        await sleep(150);
-        const recs = await API.getRecommendations(id);
-        for (const r of recs) {
-          const t = fromTidal(r.track || r);
-          if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
-          if (t.pop > RARE_POP_MAX) continue;
-          if (!_passesGenreFilter(t)) continue; // Plan D
-          if (!SpotifyEngine.passesFilter(t)) continue;
-          t._src = 'tidal_rec';                 // Plan C
-          newTracks.push(t);
-        }
-      }
-
-      // ── SPOTIFY AUDIO-PROFILED RECOMMENDATIONS ──────────────────
-      if (!forceSeedId && S.audioProfile?.count >= 3) {
-        const spRecs = await SpotifyEngine.getRecsForProfile();
-        for (const t of spRecs) {
-          if (!_passesGenreFilter(t)) continue;
-          newTracks.push(t);
-        }
-      }
-
-      // Mix in ListenBrainz CF recommendations if available
-      if (S.lbTracks?.length && !forceSeedId) {
-        const lbBatch = S.lbTracks.splice(0, 6);
-        for (const t of lbBatch) {
-          if (!hasSeen(t) && !isLiked(t) && _passesGenreFilter(t)) { // Plan D
-            t._src = t._src || 'lb_cf';  // Plan C
-            newTracks.push(t);
-          }
-        }
-        // Refill LB tracks in background when running low
-        if (S.lbTracks.length < 4) LBEngine.resolveToTidal(8);
-      }
-
-      // Plan B: Artist cooldown filter — skip if artist appeared in queue recently
-      const nowCd = Date.now();
-      const COOLDOWN_MS = 45 * 60_000; // 45 minutes — long enough to prevent artist repetition
-      const afterCooldown = newTracks.filter(t => {
-        const ak2 = (t.a || '').toLowerCase().trim();
-        return !ak2 || !(S.artistCooldown[ak2] && (nowCd - S.artistCooldown[ak2]) < COOLDOWN_MS);
-      });
-      // Fallback: if cooldown is too aggressive (few candidates left), use original pool
-      const cooldownFiltered = afterCooldown.length >= 4 ? afterCooldown : newTracks;
-
-      // Plan C: Source diversity — max 5 tracks per source per batch
-      const srcCount = {};
-      const srcDiverse = cooldownFiltered.filter(t => {
-        const src = t._src || 'unknown';
-        srcCount[src] = (srcCount[src] || 0) + 1;
-        return srcCount[src] <= 5;
-      });
-      const poolFinal = srcDiverse.length >= 2 ? srcDiverse : cooldownFiltered;
-
-      // Multi-factor score
+      // Feature extraction (MusicBrainz / Gemini styles)
       const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
-      const scored = poolFinal.map(t => ({ t, sc: Scorer.score(t, { recentVecs: recentVecsG }) }));
-      scored.sort((a, b) => (b.sc.total - a.sc.total) + (Math.random() - 0.5) * 0.06);
+      const scored = merged.map(t => ({
+        t,
+        sc: Scorer.score(t, { recentVecs: recentVecsG })
+      }));
 
-      // Plan G: Profile thinness boost — if a top profile genre is underrepresented in the
-      // top-6 candidates, bump tracks that cover that gap
-      const topGenreKeys = _profileTopGenreKeys(6);
-      if (topGenreKeys.length && scored.length >= 6) {
-        const coveredKeys = new Set(
-          scored.slice(0, 6).flatMap(s => Object.keys(s.sc.vec).filter(k => topGenreKeys.includes(k)))
-        );
-        const thinKeys = topGenreKeys.filter(k => !coveredKeys.has(k));
-        if (thinKeys.length) {
-          for (const s of scored) {
-            if (thinKeys.some(k => s.sc.vec[k] > 0)) s.sc.total = Math.min(1, s.sc.total + 0.12);
-          }
-          scored.sort((a, b) => b.sc.total - a.sc.total);
-        }
-      }
+      // Sort by score
+      scored.sort((a, b) => (b.sc.total - a.sc.total) + (Math.random() - 0.5) * 0.05);
 
-      const seenSet = new Set();
-      const unique = scored
-        .map(s => s.t)
-        .filter(t => {
-          const k = t.tidalId || t.isrc || t.t;
-          if (seenSet.has(k)) return false;
-          seenSet.add(k);
-          return true;
-        });
+      // Take top 30 candidates to re-rank for diversity
+      const topCandidates = scored.slice(0, 30);
+      const reranked = mmrRerank(topCandidates, Math.min(15, queueNeeds));
+      const finalTracks = reranked.map(r => r.t);
 
-      // Novelty guarantee: ensure at least 2 slots go to artists never seen before.
-      // Pull them from the bottom of the scored list (lower score but truly new artists)
-      // and inject them so discovery is always present regardless of scoring outcome.
-      if (unique.length >= 4) {
-        const knownArtists = new Set([
-          ...S.myLiked.map(t => (t.a || '').toLowerCase().trim()),
-          ...S.recentArtists
-        ]);
-        const novelSlots = scored
-          .map(s => s.t)
-          .filter(t => {
-            const ak2 = (t.a || '').toLowerCase().trim();
-            return ak2 && !knownArtists.has(ak2) && !unique.slice(0, 4).some(u => u.tidalId === t.tidalId);
-          })
-          .slice(0, 2);
-        // Insert novelty tracks at positions 3 and 5 (not first, not last)
-        if (novelSlots.length) {
-          unique.splice(2, 0, ...novelSlots);
-        }
-      }
-
-      // Plan B: record cooldown for each artist entering the queue
-      for (const t of unique) {
+      // Record artist cooldown so we don't spam the same artist
+      for (const t of finalTracks) {
         const ak2 = (t.a || '').toLowerCase().trim();
         if (ak2) S.artistCooldown[ak2] = Date.now();
       }
-      // Frontier: store surfaced tracks as future constellation seeds
-      for (const t of unique.slice(0, 4)) {
-        if (!S.frontierTracks.some(f => f.tidalId === t.tidalId)) S.frontierTracks.push(t);
-      }
-      if (S.frontierTracks.length > 12) S.frontierTracks = S.frontierTracks.slice(-12);
-      S.queue.push(...unique);
+
+      // Add to queue
+      S.queue.push(...finalTracks);
       updateQueueCounter();
       showDiscoverCards();
     } finally {
@@ -2032,46 +1895,20 @@ const Queue = {
   },
 
   async _catalogSeeds(count) {
-    // Pick random liked catalog tracks, get their Tidal IDs
-    // Rare mode: seed from catalog tracks that are themselves rare (pop 5-38)
-    const pool = CATALOG.filter(t => t.pop > 4 && t.pop <= RARE_POP_MAX);
-    const picks = randPick(pool.length > 0 ? pool : CATALOG, Math.min(count * 2, 10));
-    const result = [];
-    for (const t of picks) {
-      if (result.length >= count) break;
-      const tidalId = await this._getTidalId(t);
-      if (tidalId) result.push(tidalId);
-    }
-    return result;
+    const pool = CATALOG;
+    return randPick(pool.length > 0 ? pool : CATALOG, Math.min(count * 2, 10)).filter(t => t.sid).map(t => `s:${t.sid}`);
   },
 
   async _likedSeeds(count) {
-    // Pool: in-app liked tracks first, then full CSV catalog as fallback
-    const pool = S.myLiked.length >= 5
-      ? S.myLiked
-      : [...S.myLiked, ...CATALOG];
+    const pool = S.myLiked.length >= 5 ? S.myLiked : [...S.myLiked, ...CATALOG];
     const picks = randPick(pool, Math.min(count * 3, 18));
     const arr = Array.isArray(picks) ? picks : [picks];
-    const result = [];
-    for (const t of arr) {
-      if (result.length >= count) break;
-      const id = await this._getTidalId(t);
-      if (id) result.push(id);
-    }
-    return result;
+    return arr.map(t => trackId(t));
   },
 
   async _getTidalId(t) {
-    // Check cache
-    if (t.sid && S.tidalCache[t.sid]) return S.tidalCache[t.sid];
-
-    const found = await API.search(t.t, t.isrc);
-    if (!found) return null;
-    if (t.sid) {
-      S.tidalCache[t.sid] = found.id;
-      saveState();
-    }
-    return found.id;
+    if (t.sid) return `s:${t.sid}`;
+    return null;
   }
 };
 
@@ -2085,7 +1922,7 @@ const Player = {
     a.addEventListener('play', () => this._onStateChange(true));
     a.addEventListener('pause', () => this._onStateChange(false));
     a.addEventListener('error', () => this._onError());
-    a.addEventListener('canplay', () => { if (S.isPlaying) a.play().catch(()=>{}); });
+    a.addEventListener('canplay', () => { if (S.isPlaying) a.play().catch(() => { }); });
     initMediaSessionHandlers();
   },
 
@@ -2124,12 +1961,12 @@ const Player = {
     S.isPlaying = true;
     try {
       await S.audio.play();
-    } catch(e) {
+    } catch (e) {
       // If CORS on stream URL, fall back to preview
       if (track.pre && url !== track.pre) {
         S.audio.src = track.pre;
         S.isPreview = true;
-        try { await S.audio.play(); } catch(_) {}
+        try { await S.audio.play(); } catch (_) { }
       }
     }
 
@@ -2137,9 +1974,9 @@ const Player = {
     updatePlayPauseIcons();
     updateLikeBtn();
     updateMediaSession(track);
-  // Notify scrobbling services of now-playing
-  LBEngine.nowPlaying(track);
-  LastFMEngine.nowPlaying(track);
+    // Notify scrobbling services of now-playing
+    LBEngine.nowPlaying(track);
+    LastFMEngine.nowPlaying(track);
 
     // Load lyrics if tidal and full player open
     if (S.fullPlayerOpen && track.tidalId) {
@@ -2150,7 +1987,7 @@ const Player = {
   togglePlay() {
     if (!S.playerTrack) return;
     if (S.audio.paused) {
-      S.audio.play().catch(()=>{});
+      S.audio.play().catch(() => { });
       S.isPlaying = true;
     } else {
       S.audio.pause();
@@ -2162,7 +1999,7 @@ const Player = {
   next() {
     if (S.repeat === 'one') {
       S.audio.currentTime = 0;
-      S.audio.play().catch(()=>{});
+      S.audio.play().catch(() => { });
       return;
     }
     const nextIdx = this._nextIdx();
@@ -2232,7 +2069,7 @@ const Player = {
     _checkListenSignal(S.playerTrack, true);
     if (S.repeat === 'one') {
       S.audio.currentTime = 0;
-      S.audio.play().catch(()=>{});
+      S.audio.play().catch(() => { });
     } else {
       this.next();
     }
@@ -2253,7 +2090,7 @@ const Player = {
     if (t && t.pre && S.audio.src !== t.pre) {
       S.audio.src = t.pre;
       S.isPreview = true;
-      S.audio.play().catch(()=>{});
+      S.audio.play().catch(() => { });
       updatePlayerIsPreview();
     }
   }
@@ -2276,12 +2113,12 @@ class CardSwiper {
   }
 
   _bindEvents() {
-    this.el.addEventListener('mousedown',  e => this._start(e.clientX, e.clientY));
-    this.el.addEventListener('touchstart', e => this._start(e.touches[0].clientX, e.touches[0].clientY), {passive:true});
-    document.addEventListener('mousemove',  e => this._move(e.clientX, e.clientY));
-    document.addEventListener('touchmove',  e => this._move(e.touches[0].clientX, e.touches[0].clientY), {passive:true});
-    document.addEventListener('mouseup',   e => this._end(e.clientX));
-    document.addEventListener('touchend',  e => this._end(e.changedTouches[0].clientX));
+    this.el.addEventListener('mousedown', e => this._start(e.clientX, e.clientY));
+    this.el.addEventListener('touchstart', e => this._start(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    document.addEventListener('mousemove', e => this._move(e.clientX, e.clientY));
+    document.addEventListener('touchmove', e => this._move(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    document.addEventListener('mouseup', e => this._end(e.clientX));
+    document.addEventListener('touchend', e => this._end(e.changedTouches[0].clientX));
   }
 
   _start(x, y) {
@@ -2512,7 +2349,7 @@ function createCard(track, stackPos) {
 }
 
 function escHtml(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function updateCardProgress(ratio) {
@@ -2581,7 +2418,7 @@ function handleLike(track) {
       // Enrich immediately in background so profile has tag features on next update
       EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
         if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
-      }).catch(() => {});
+      }).catch(() => { });
       SpotifyEngine.buildProfile();
       if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
       saveState();
@@ -2606,7 +2443,7 @@ function handleSwipeLike(track) {
     UserProfile.update(track, 'swipe_like');
     EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
       if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
-    }).catch(() => {});
+    }).catch(() => { });
     SpotifyEngine.buildProfile();
     if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
     saveState();
@@ -2666,8 +2503,8 @@ function handleUndo() {
 
   // Remove from seenIds so the card can reappear
   if (track.tidalId) S.seenIds.delete(`t:${track.tidalId}`);
-  if (track.sid)     S.seenIds.delete(`s:${track.sid}`);
-  if (track.isrc)    S.seenIds.delete(`i:${track.isrc}`);
+  if (track.sid) S.seenIds.delete(`s:${track.sid}`);
+  if (track.isrc) S.seenIds.delete(`i:${track.isrc}`);
 
   // Put back at the front of the queue
   S.queue.unshift(track);
@@ -2715,9 +2552,9 @@ function advanceQueue() {
 function updateMediaSession(track) {
   if (!('mediaSession' in navigator) || !track) return;
   navigator.mediaSession.metadata = new MediaMetadata({
-    title:   track.t  || '',
-    artist:  track.a  || '',
-    album:   track.al || '',
+    title: track.t || '',
+    artist: track.a || '',
+    album: track.al || '',
     artwork: track.art ? [
       { src: track.art, sizes: '640x640', type: 'image/jpeg' }
     ] : []
@@ -2726,9 +2563,9 @@ function updateMediaSession(track) {
 
 function initMediaSessionHandlers() {
   if (!('mediaSession' in navigator)) return;
-  navigator.mediaSession.setActionHandler('play',          () => { S.audio.play().catch(()=>{}); });
-  navigator.mediaSession.setActionHandler('pause',         () => { S.audio.pause(); });
-  navigator.mediaSession.setActionHandler('nexttrack',     () => Player.next());
+  navigator.mediaSession.setActionHandler('play', () => { S.audio.play().catch(() => { }); });
+  navigator.mediaSession.setActionHandler('pause', () => { S.audio.pause(); });
+  navigator.mediaSession.setActionHandler('nexttrack', () => Player.next());
   navigator.mediaSession.setActionHandler('previoustrack', () => Player.prev());
   navigator.mediaSession.setActionHandler('seekto', e => {
     if (e.seekTime != null) S.audio.currentTime = e.seekTime;
@@ -2793,10 +2630,10 @@ function updateFullPlayer(track) {
 function updatePlayPauseIcons() {
   const playing = S.isPlaying && !S.audio.paused;
   // Mini
-  $('icon-play').style.display  = playing ? 'none' : '';
+  $('icon-play').style.display = playing ? 'none' : '';
   $('icon-pause').style.display = playing ? '' : 'none';
   // Full
-  $('full-icon-play').style.display  = playing ? 'none' : '';
+  $('full-icon-play').style.display = playing ? 'none' : '';
   $('full-icon-pause').style.display = playing ? '' : 'none';
 }
 
@@ -2808,14 +2645,14 @@ function updateProgressUI(ratio, cur, dur) {
   const pt = document.querySelector('#progress-track .progress-thumb');
   if (pt) pt.style.left = `calc(${pct} - 6px)`;
   if ($('time-current')) $('time-current').textContent = fmtTime(cur);
-  if ($('time-total'))   $('time-total').textContent   = fmtTime(dur);
+  if ($('time-total')) $('time-total').textContent = fmtTime(dur);
   // Full player
   const ff = $('full-seek-fill');
   const ft = $('full-seek-thumb');
   if (ff) ff.style.width = pct;
-  if (ft) ft.style.left  = `calc(${pct} - 7px)`;
+  if (ft) ft.style.left = `calc(${pct} - 7px)`;
   if ($('full-time-current')) $('full-time-current').textContent = fmtTime(cur);
-  if ($('full-time-total'))   $('full-time-total').textContent   = fmtTime(dur);
+  if ($('full-time-total')) $('full-time-total').textContent = fmtTime(dur);
 }
 
 function updateShuffleRepeatBtns() {
@@ -2841,10 +2678,10 @@ function setSettingsStatus(service, ok, msg) {
   el.className = 'settings-status ' + (ok ? 'ok' : 'err');
 }
 function updateSettingsBadges() {
-  const lb  = $('lb-badge');
+  const lb = $('lb-badge');
   const lfm = $('lfm-badge');
-  if (lb)  { lb.textContent  = S.lbToken        ? ('✓ ' + (S.lbUser || 'connesso'))    : 'Non connesso'; lb.className  = 'settings-badge' + (S.lbToken        ? ' connected' : ''); }
-  if (lfm) { lfm.textContent = S.lfmSessionKey   ? ('✓ ' + (S.lfmUsername || 'connesso')) : 'Non connesso'; lfm.className = 'settings-badge' + (S.lfmSessionKey   ? ' connected' : ''); }
+  if (lb) { lb.textContent = S.lbToken ? ('✓ ' + (S.lbUser || 'connesso')) : 'Non connesso'; lb.className = 'settings-badge' + (S.lbToken ? ' connected' : ''); }
+  if (lfm) { lfm.textContent = S.lfmSessionKey ? ('✓ ' + (S.lfmUsername || 'connesso')) : 'Non connesso'; lfm.className = 'settings-badge' + (S.lfmSessionKey ? ' connected' : ''); }
 }
 
 // ─── COUNTRY PICKER ──────────────────────────────────────────────────────────
@@ -3015,8 +2852,8 @@ function renderLibrary(filter = S.libraryFilter, search = '') {
     .map(t => ({ ...t, _source: 'discovered' }));
 
   let all = filter === 'catalog' ? catalogTracks
-           : filter === 'discovered' ? discoveredTracks
-           : [...catalogTracks, ...discoveredTracks];
+    : filter === 'discovered' ? discoveredTracks
+      : [...catalogTracks, ...discoveredTracks];
 
   // Search
   if (search.trim()) {
@@ -3366,9 +3203,9 @@ function initProgressSeek() {
     if (!el) return;
     let seeking = false;
     el.addEventListener('mousedown', (e) => { seeking = true; handleSeek(el, e); });
-    el.addEventListener('touchstart', (e) => { seeking = true; handleSeek(el, e); }, {passive:true});
+    el.addEventListener('touchstart', (e) => { seeking = true; handleSeek(el, e); }, { passive: true });
     document.addEventListener('mousemove', (e) => { if (seeking) handleSeek(el, e); });
-    document.addEventListener('touchmove', (e) => { if (seeking) handleSeek(el, e); }, {passive:true});
+    document.addEventListener('touchmove', (e) => { if (seeking) handleSeek(el, e); }, { passive: true });
     document.addEventListener('mouseup', () => { seeking = false; });
     document.addEventListener('touchend', () => { seeking = false; });
   });
@@ -3378,11 +3215,11 @@ function initProgressSeek() {
 function initKeyboard() {
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT') return;
-    switch(e.key) {
+    switch (e.key) {
       case ' ':
         e.preventDefault();
         if (S.view === 'discover' && S.currentCardTrack) {
-          playCardPreview(S.currentCardTrack, {classList:{toggle:()=>{},contains:()=>false}});
+          playCardPreview(S.currentCardTrack, { classList: { toggle: () => { }, contains: () => false } });
         } else {
           Player.togglePlay();
         }
@@ -3518,7 +3355,7 @@ function initEvents() {
   $('btn-lb-connect').addEventListener('click', async () => {
     const btn = $('btn-lb-connect');
     const username = $('lb-username').value.trim();
-    const token    = $('lb-token').value.trim();
+    const token = $('lb-token').value.trim();
     if (!username || !token) { setSettingsStatus('lb', false, 'Inserisci username e token'); return; }
     btn.disabled = true; btn.textContent = 'Connessione…';
     const res = await LBEngine.connect(username, token);
@@ -3529,7 +3366,7 @@ function initEvents() {
 
   // Settings view — Last.fm connect
   $('btn-lfm-connect').addEventListener('click', async () => {
-    const btn      = $('btn-lfm-connect');
+    const btn = $('btn-lfm-connect');
     const username = $('lfm-username').value.trim();
     const password = $('lfm-password').value.trim();
     btn.disabled = true; btn.textContent = 'Connessione…';
@@ -3594,21 +3431,21 @@ function initEvents() {
       version: 1,
       exportedAt: new Date().toISOString(),
       tracks: S.myLiked.map(t => ({
-        tidalId:  t.tidalId || null,
-        isrc:     t.isrc    || null,
-        title:    t.t,
-        artist:   t.a,
-        album:    t.al      || null,
-        year:     t.y       || null,
-        art:      t.art     || null,
-        duration: t.d       || null,
-        source:   t._src || t.source || 'liked',
-        likedAt:  t.likedAt || null,
+        tidalId: t.tidalId || null,
+        isrc: t.isrc || null,
+        title: t.t,
+        artist: t.a,
+        album: t.al || null,
+        year: t.y || null,
+        art: t.art || null,
+        duration: t.d || null,
+        source: t._src || t.source || 'liked',
+        likedAt: t.likedAt || null,
       }))
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
     a.href = url;
     a.download = `swerve-library-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
@@ -3643,16 +3480,16 @@ function initEvents() {
         if (keys.has(titleKey)) continue;
         S.myLiked.push({
           tidalId: tid,
-          isrc:    t.isrc     || null,
-          t:       t.title    || t.t  || '',
-          a:       t.artist   || t.a  || '',
-          al:      t.album    || t.al || '',
-          y:       t.year     || t.y  || '',
-          art:     t.art      || null,
-          d:       t.duration || t.d  || 0,
-          _src:    'discovered',
-          source:  t.source   || 'imported',
-          likedAt: t.likedAt  || Date.now(),
+          isrc: t.isrc || null,
+          t: t.title || t.t || '',
+          a: t.artist || t.a || '',
+          al: t.album || t.al || '',
+          y: t.year || t.y || '',
+          art: t.art || null,
+          d: t.duration || t.d || 0,
+          _src: 'discovered',
+          source: t.source || 'imported',
+          likedAt: t.likedAt || Date.now(),
         });
         if (tid) keys.add(tid);
         if (t.isrc) keys.add(t.isrc);
@@ -3726,14 +3563,33 @@ async function init() {
   // Seed the taste engine from liked CSV tracks (initial setup)
   if (S.taste.seeds.length === 0 && CATALOG.length > 0) {
     // Pick high-popularity tracks as initial seeds
-    const popular = CATALOG.filter(t => t.pop >= 20).sort((a,b) => b.pop - a.pop);
+    const popular = CATALOG.filter(t => t.pop >= 20).sort((a, b) => b.pop - a.pop);
     const picks = popular.slice(0, 30);
     // Find Tidal IDs in background for a few tracks
     seedInitialTaste(picks);
+
+    // Initial pass: populate base artists globally in Taste Engine 
+    // so recommendations immediately know user's preferred artists without explicit "likes"
+    for (const t of CATALOG) {
+      const a = (t.a || '').toLowerCase().trim();
+      if (a) {
+        S.taste.artists[a] = S.taste.artists[a] || { liked: 0, skipped: 0 };
+        // Weight initial catalog tracks lightly to set a base
+        S.taste.artists[a].liked++;
+      }
+    }
+    saveState();
   }
 
   // Seed user profile from already-enriched liked tracks (fast, sync)
   UserProfile.seedFromLiked();
+  if (S.profileTotal < 5 && CATALOG.length > 0) {
+    CATALOG.slice(0, 100).forEach(t => {
+      const k = `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
+      if (S.enrichCache[k]) UserProfile.update(t, 'like');
+    });
+    saveState();
+  }
 
   // Start filling the discover queue
   showDiscoverLoading();
@@ -3747,7 +3603,7 @@ async function init() {
   if (S.lbUser) { setTimeout(() => LBEngine.loadRecs(), 8000); }
   updateSettingsBadges();
   // Restore settings form values for connected services
-  if (S.lbUser)      { const el = $('lb-username'); if (el) el.value = S.lbUser; }
+  if (S.lbUser) { const el = $('lb-username'); if (el) el.value = S.lbUser; }
   if (S.lfmUsername) { const el = $('lfm-username'); if (el) el.value = S.lfmUsername; }
 }
 
