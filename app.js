@@ -419,40 +419,57 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Samples n seeds from full liked set. Recent tracks have higher weight
 // (linear ramp 1x → 10x) so we explore the full taste graph, not just
 // the last 5 likes.
+// Weighted reservoir sample from liked tracks (recency-biased: oldest=1x, newest=10x).
+// Hard cap of 2 tracks per artist prevents a single artist dominating the seed batch.
 function _weightedSeedSample(n) {
   const pool = S.myLiked.length >= 3 ? S.myLiked : [...S.myLiked, ...CATALOG.slice(0, 50)];
   if (!pool.length) return [];
   const len = pool.length;
-  // weights[i]: track at index i (0=oldest) gets weight proportional to position
   const weights = pool.map((_, i) => 1 + (i / len) * 9); // 1x … 10x
   const sumW = weights.reduce((s, w) => s + w, 0);
-  const result = [], used = new Set();
+  const result = [], used = new Set(), artistCount = {};
   let attempts = 0;
-  while (result.length < n && attempts < n * 12) {
+  while (result.length < n && attempts < n * 20) {
     attempts++;
     let r = Math.random() * sumW, idx = 0;
     for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idx = i; break; } }
-    if (!used.has(idx)) { used.add(idx); result.push(pool[idx]); }
+    if (used.has(idx)) continue;
+    const ak = (pool[idx].a || '').toLowerCase().trim();
+    if ((artistCount[ak] || 0) >= 2) continue; // cap 2 tracks per artist
+    used.add(idx);
+    artistCount[ak] = (artistCount[ak] || 0) + 1;
+    result.push(pool[idx]);
   }
   return result;
 }
 
 // ─── PLAN D: Hard genre filter ────────────────────────────────────
 // Returns top N genre/style keys from the normalised profile vector.
+// Returns top N genre/style keys from the profile, with a diversity cap of
+// max 2 keys per "first-word segment" (e.g. "bossa" in "bossa nova", "samba")
+// so a single regional genre family can't monopolise the top slots.
 function _profileTopGenreKeys(n = 14) {
   const profile = UserProfile.get();
-  return Object.entries(profile)
+  const sorted = Object.entries(profile)
     .filter(([k]) => k.startsWith('sty:') || k.startsWith('gen:'))
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n)
-    .map(([k]) => k);
+    .sort((a, b) => b[1] - a[1]);
+  const segCount = {};
+  const result = [];
+  for (const [k] of sorted) {
+    if (result.length >= n) break;
+    const seg = k.replace(/^(?:sty:|gen:)/, '').split(/[-\s]/)[0];
+    segCount[seg] = (segCount[seg] || 0) + 1;
+    if (segCount[seg] <= 2) result.push(k);
+  }
+  return result;
 }
 
 // A candidate track must share ≥1 genre/style key with the top profile keys.
-// Guard is inactive until the profile is mature enough (≥5 actions) and has
-// genre signal. Unenriched tracks (no sty:/gen: data yet) always pass —
-// we can only filter what we actually know about.
-function _passesGenreFilter(track) {
+// Guard is inactive when: profile is immature (<5 actions), no genre signal exists,
+// or the track hasn't been enriched yet. Pass `presetMode=true` to bypass — Discogs
+// presets apply their own genre logic and must not be filtered by user taste.
+function _passesGenreFilter(track, { presetMode = false } = {}) {
+  if (presetMode) return true;
   if (S.profileTotal < 5) return true;
   const topKeys = _profileTopGenreKeys(14);
   if (!topKeys.length) return true;
@@ -1162,7 +1179,7 @@ const LBEngine = {
   // Maps MBIDs to artist+title via LB metadata endpoint, stores as lbRecQueries.
   async loadRecs() {
     if (!S.lbUser) return;
-    if (Date.now() - S.lbRecsTs < 4 * 3600000) return; // 4h cache
+    if (Date.now() - S.lbRecsTs < 2 * 3600000) return; // 2h cache
     try {
       const r = await fetch(LB_BASE + '/cf/recommendation/user/' + S.lbUser + '/recording?count=50');
       if (!r.ok) return;
@@ -1428,7 +1445,8 @@ const SpotifyEngine = {
 
       const { energy, valence, tempo } = S.audioProfile;
       const params = new URLSearchParams({
-        limit: '15',
+        limit:          '15',
+        max_popularity: String(RARE_POP_MAX), // avoid mainstream hits
         target_energy:  energy.mean.toFixed(3),
         target_valence: valence.mean.toFixed(3),
         target_tempo:   Math.round(tempo.mean),
@@ -1524,11 +1542,19 @@ const UserProfile = {
     S.profileTotal = (S.profileTotal || 0) + Math.abs(w);
   },
 
-  // Normalized profile (for scoring)
+  // Normalized profile (for scoring).
+  // Sqrt-damping applied at read time: reduces dominance of over-represented genres
+  // (e.g. 10 Brazilian likes ≠ 10× weight) without touching the stored accumulator.
   get() {
     if (!S.profileTotal) return {};
-    const t = S.profileTotal, v = {};
-    for (const k in S.profileVector) if (S.profileVector[k] !== 0) v[k] = S.profileVector[k] / t;
+    const raw = {};
+    for (const k in S.profileVector) if (S.profileVector[k] !== 0) raw[k] = S.profileVector[k] / S.profileTotal;
+    const damped = {};
+    for (const k in raw) damped[k] = Math.sign(raw[k]) * Math.sqrt(Math.abs(raw[k]));
+    const sum = Object.values(damped).reduce((s, x) => s + Math.abs(x), 0);
+    if (!sum) return raw;
+    const v = {};
+    for (const k in damped) v[k] = damped[k] / sum;
     return v;
   },
 
@@ -1584,9 +1610,10 @@ const Scorer = {
       diversity = Math.max(0.1, 1 - maxSim * 0.8);
     }
 
-    // 5. Dislike penalty — penalise similarity to skipped tracks (Plan E)
+    // 5. Dislike penalty — penalise similarity to skipped tracks (Plan E).
+    // Only activate after ≥3 accumulated skips to avoid over-fitting session-start noise.
     let dislikePenalty = 0;
-    if (S.dislikeTotal > 0 && Object.keys(S.dislikeVec).length > 0) {
+    if (S.dislikeTotal >= 3 && Object.keys(S.dislikeVec).length > 0) {
       const dvec = {};
       for (const k in S.dislikeVec) dvec[k] = S.dislikeVec[k] / S.dislikeTotal;
       dislikePenalty = FeatureVec.sim(dvec, vec) * 0.35;
@@ -1749,7 +1776,7 @@ const Queue = {
           const candidates = discogsTracks.filter(t => {
             if (hasSeen(t) || isLiked(t)) return false;
             if (seenSet.has(t.tidalId)) return false;
-            if (!_passesGenreFilter(t)) return false; // Plan D
+            if (!_passesGenreFilter(t, { presetMode: true })) return false; // Discogs has own genre logic
             seenSet.add(t.tidalId);
             t._src = 'discogs'; // Plan C
             return true;
@@ -1917,7 +1944,7 @@ const Queue = {
 
       // Plan B: Artist cooldown filter — skip if artist appeared in queue recently
       const nowCd = Date.now();
-      const COOLDOWN_MS = 25 * 60_000; // 25 minutes
+      const COOLDOWN_MS = 45 * 60_000; // 45 minutes — long enough to prevent artist repetition
       const afterCooldown = newTracks.filter(t => {
         const ak2 = (t.a || '').toLowerCase().trim();
         return !ak2 || !(S.artistCooldown[ak2] && (nowCd - S.artistCooldown[ak2]) < COOLDOWN_MS);
