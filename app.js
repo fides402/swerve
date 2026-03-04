@@ -1005,36 +1005,25 @@ const SimilarArtistEngine = {
     } catch { return []; }
   },
 
-  // Runs in background — finds similar-artist tracks and pushes into queue.
-  // Called after Queue.refill() when the profile is established.
-  async fillQueue(maxAdd = 12) {
-    if (S.profileTotal < 3 || S.myLiked.length < 2) return;
+  async buildClusterQueue(baseArtists, maxAdd = 15) {
+    if (!baseArtists || baseArtists.length === 0) return [];
 
-    // Top 3 liked artists by frequency in library
-    const counts = {};
-    S.myLiked.forEach(t => { counts[t.a] = (counts[t.a] || 0) + 1; });
-    const topArtists = Object.entries(counts)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 3)
-      .map(([a]) => a);
+    const simSet = new Set(baseArtists);
 
-    const likedSet = new Set(S.myLiked.map(t => t.a.toLowerCase().trim()));
-    const simSet = new Set();
-
-    for (const artist of topArtists) {
+    for (const artist of baseArtists) {
       await sleep(220);
       const similar = await this._similar(artist);
-      similar.forEach(s => {
-        if (!likedSet.has(s.toLowerCase().trim())) simSet.add(s);
-      });
+      similar.forEach(s => simSet.add(s));
     }
 
     let added = 0;
-    for (const artist of [...simSet].slice(0, 8)) {
+    const tracks = [];
+    const pool = [...simSet].sort(() => Math.random() - 0.5);
+
+    for (const artist of pool) {
       if (added >= maxAdd) break;
       await sleep(400);
       try {
-        // Search Discogs by artist name, biased toward well-regarded releases
         const qs = new URLSearchParams({
           type: 'release', artist,
           per_page: '10', page: String(Math.ceil(Math.random() * 4) + 1),
@@ -1045,7 +1034,7 @@ const SimilarArtistEngine = {
         if (!r.ok) continue;
         const releases = (await r.json()).results || [];
         const valid = releases
-          .filter(rel => { const h = rel.community?.have || 0; return h >= 5 && h < DISCOGS_HAVE_MAX; })
+          .filter(rel => { const h = rel.community?.have || 0; return h >= 3 && h < DISCOGS_HAVE_MAX; })
           .slice(0, 2);
 
         for (const rel of valid) {
@@ -1098,27 +1087,37 @@ const SimilarArtistEngine = {
                 } else { DiscogsEngine._cache[key] = null; continue; }
               }
               if (!cached) continue;
-              const t = { tidalId: cached.id };
-              if (hasSeen(t) || isLiked(t) || S.queue.some(q => q.tidalId === cached.id)) continue;
 
-              S.queue.push({
-                tidalId: cached.id, t: track.title, a: ta,
-                al: cached.al || relAlbum, y: cached.y || relYear, art: cached.art,
-                pre: null, d: cached.d, isrc: cached.isrc,
-                pop: 0, sid: null, source: 'discogs',
+              const t = {
+                tidalId: cached.id,
+                t: track.title,
+                a: ta,
+                al: cached.al || relAlbum,
+                y: cached.y || relYear,
+                art: cached.art,
+                pre: null,
+                d: cached.d,
+                isrc: cached.isrc,
+                pop: 0,
+                sid: null,
+                source: 'cluster',
+                _src: 'cluster',
                 _styles: detail.styles || [],
                 _genres: detail.genres || [],
                 _country: detail.country || null,
                 _labels: (detail.labels || []).slice(0, 3).map(l => l.name || ''),
-              });
-              added++;
-              if (added % 3 === 0) { updateQueueCounter(); showDiscoverCards(); }
+              };
+
+              if (!hasSeen(t) && !isLiked(t)) {
+                tracks.push(t);
+                added++;
+              }
             }
           } catch { continue; }
         }
       } catch { continue; }
     }
-    if (added > 0) { updateQueueCounter(); showDiscoverCards(); saveState(); }
+    return tracks;
   }
 };
 
@@ -1491,6 +1490,8 @@ const SpotifyEngine = {
           if (!_tidalMatchOk(artistName, sp.name, found)) continue;
           const t = fromTidal(found);
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
+          if (t.sid && CATALOG.some(c => c.sid === t.sid)) continue;
+          if (t.isrc && CATALOG.some(c => c.isrc === t.isrc)) continue;
           if (t.pop > RARE_POP_MAX) continue;
           const ck = t.isrc || `${(t.a || '').toLowerCase().trim()}|${(t.t || '').toLowerCase().trim()}`;
           if (!S.spotifyCache[ck] && S.audioProfile && S.audioProfile.count >= 3) {
@@ -1783,26 +1784,18 @@ const Taste = {
 
 // ─── GEMINI ENGINE ────────────────────────────────────────────────
 const GeminiEngine = {
-  async getInteractiveRecs(seeds) {
-    if (!seeds || seeds.length === 0) return [];
+  async getClusterArtists(seedTrack) {
+    if (!seedTrack || !seedTrack.t || !seedTrack.a) return [];
 
-    // Pick 5 random tracks to seed the prompt, preferring liked ones
-    const pool = S.myLiked.length >= 3 ? S.myLiked : [...S.myLiked, ...CATALOG.slice(0, 50)];
-    const sample = randPick(pool, Math.min(pool.length, 5));
-    const examples = sample.map(t => `- ${t.t} by ${t.a}`).join('\n');
-
-    const prompt = `Based on these tracks:
-${examples}
-
-Suggest 8 obscure, rare, and highly similar tracks from the 60s, 70s, or 80s (focus on jazz, soul, library music, or soundtracks).
-Do not suggest extremely mainstream tracks.
-Format the output EXACTLY as a JSON array of objects with keys "t" (title) and "a" (artist).
+    const prompt = `Based on the track '${seedTrack.t}' by '${seedTrack.a}', suggest exactly 5 different, rare, and highly affine artists that have a very similar vibe (e.g., obscure soul, rare groove, spiritual jazz, or whatever genre this belongs to).
+Do not suggest mainstream artists.
+Format the output EXACTLY as a JSON array of strings containing ONLY the artist names.
 Example:
 [
-  {"t": "Track Title 1", "a": "Artist 1"},
-  {"t": "Track Title 2", "a": "Artist 2"}
+  "Artist Name 1",
+  "Artist Name 2"
 ]
-Output ONLY valid JSON, without any markdown formatting.`;
+Output ONLY valid JSON, without any markdown formatting or introductory text.`;
 
     try {
       const resp = await fetch(`${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`, {
@@ -1811,7 +1804,7 @@ Output ONLY valid JSON, without any markdown formatting.`;
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: 0.7,
+            temperature: 0.8,
             responseMimeType: 'application/json',
           },
         }),
@@ -1824,22 +1817,7 @@ Output ONLY valid JSON, without any markdown formatting.`;
       const parsed = JSON.parse(text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim());
       if (!Array.isArray(parsed)) return [];
 
-      const tracks = [];
-      for (const item of parsed) {
-        if (!item.t || !item.a) continue;
-
-        // Find on Tidal
-        await sleep(150);
-        const searchRes = await API.search(`${item.t} ${item.a}`, null);
-        if (searchRes && _tidalMatchOk(item.a, item.t, searchRes)) {
-          const t = fromTidal(searchRes);
-          t._src = 'gemini';
-          if (!hasSeen(t) && !isLiked(t) && t.pop <= RARE_POP_MAX) {
-            tracks.push(t);
-          }
-        }
-      }
-      return tracks;
+      return parsed.slice(0, 5);
     } catch (e) {
       console.error("GeminiEngine Error:", e);
       return [];
@@ -1860,28 +1838,42 @@ const Queue = {
       const queueNeeds = QUEUE_TARGET - S.queue.length;
       if (queueNeeds <= 0) return;
 
-      const spTracks = await SpotifyEngine.getRecsForProfile();
-      let candidates = CATALOG.filter(t => !hasSeen(t) && !isLiked(t));
+      const pool = S.myLiked.length > 0 ? S.myLiked : CATALOG;
+      const seedTrack = randPick(pool, 1);
+      const forceSeedName = (forceSeedId && S.sessionSeedTrack) ? S.sessionSeedTrack : seedTrack;
+      let forceSeedTrack = Array.isArray(forceSeedName) ? forceSeedName[0] : forceSeedName;
 
-      // Use Spotify tracks primarily. Fallback to catalog ONLY if Spotify fails.
-      let merged = spTracks.filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
+      updateSeedInfo(`Analizzando cluster a partire da: ${forceSeedTrack.t} - ${forceSeedTrack.a}...`);
 
-      if (merged.length === 0 && candidates.length > 0) {
-        const fallback = randPick(candidates, Math.min(15, queueNeeds));
-        const arr = Array.isArray(fallback) ? fallback : [fallback];
-        for (const t of arr) {
-          if (!t.tidalId) {
-            await sleep(150);
-            const found = await API.search(t.t, t.isrc);
-            if (found && _tidalMatchOk(t.a, t.t, found)) {
-              t.tidalId = found.id;
-              t.art = t.art || tidalCover(found.album?.cover);
-              t.d = t.d || (found.duration || 0) * 1000;
-              t.al = t.al || found.album?.title;
+      const baseArtists = await GeminiEngine.getClusterArtists(forceSeedTrack);
+
+      let merged = [];
+      if (baseArtists && baseArtists.length > 0) {
+        updateSeedInfo(`Espansione grappolo Last.fm in corso...`);
+        const clusterTracks = await SimilarArtistEngine.buildClusterQueue(baseArtists, queueNeeds);
+        merged = clusterTracks;
+      }
+
+      // Catalog fallback only if cluster fails completely
+      if (merged.length === 0) {
+        let candidates = CATALOG.filter(t => !hasSeen(t) && !isLiked(t));
+        if (candidates.length > 0) {
+          const fallback = randPick(candidates, Math.min(15, queueNeeds));
+          const arr = Array.isArray(fallback) ? fallback : [fallback];
+          for (const t of arr) {
+            if (!t.tidalId) {
+              await sleep(150);
+              const found = await API.search(t.t, t.isrc);
+              if (found && _tidalMatchOk(t.a, t.t, found)) {
+                t.tidalId = found.id;
+                t.art = t.art || tidalCover(found.album?.cover);
+                t.d = t.d || (found.duration || 0) * 1000;
+                t.al = t.al || found.album?.title;
+              }
             }
           }
+          merged = arr.map(t => ({ ...t, _src: 'catalog' })).filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
         }
-        merged = arr.map(t => ({ ...t, _src: 'catalog' })).filter(t => t && t.tidalId && !hasSeen(t) && !isLiked(t));
       }
 
       if (merged.length === 0) {
