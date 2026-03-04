@@ -27,8 +27,8 @@ const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
 const MB_BASE        = 'https://musicbrainz.org/ws/2';
 const MB_UA          = 'Swerve/1.0 (https://github.com/fides402/swerve)';
 const LB_BASE        = 'https://api.listenbrainz.org/1';
-const GEMINI_API_KEY = 'AIzaSyDPJwhIY4J0Q0UEK1U6haPg_Xkf6OHpJV8';
-const GEMINI_MODEL   = 'gemini-2.0-flash';
+const GEMINI_API_KEY = 'AIzaSyBsk7xBptR-cdlT1UANWGloNIHgIwnB-Fo';
+const GEMINI_MODEL   = 'gemini-2.5-flash';
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const YT_KEY    = 'AIzaSyBiNS-Xtp-Ck-z39OAxVCGtqZNx6h-pVW8';
 const YT_BASE   = 'https://www.googleapis.com/youtube/v3';
@@ -2014,26 +2014,36 @@ const Queue = {
 
           const validSeeds = ytParsed.filter(p => p.artist).slice(0, 4);
 
-          // ── STEP 1: LFM artist.getSimilar for all seeds (parallel) ─────────
-          updateSeedInfo('📺 @andrenavarroII → artisti simili...');
-          const artistSimilarLists = await Promise.all(
-            validSeeds.map(async ({ artist }) => {
-              try {
-                const qs = new URLSearchParams({
-                  method: 'artist.getSimilar', artist,
-                  api_key: LASTFM_KEY, format: 'json', limit: '10', autocorrect: '1',
-                });
-                const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
-                if (!r.ok) return [];
-                const d = await r.json();
-                return (d.similarartists?.artist || []).slice(0, 8).map(a => a.name);
-              } catch { return []; }
+          // ── STEP 1: Gemini → similar artists (parallel per seed) ────────────
+          updateSeedInfo('🤖 @andrenavarroII → artisti simili...');
+          const geminiResults = await Promise.all(
+            validSeeds.slice(0, 3).map(async ({ artist, track }) => {
+              // Build a minimal fake seed object for GeminiEngine
+              return GeminiEngine.getClusterArtists({ t: track || artist, a: artist });
             })
           );
-          // Unique pool of similar artists (excluding seeds themselves)
           const seedArtists = new Set(validSeeds.map(p => p.artist.toLowerCase()));
-          const similarPool = [...new Set(artistSimilarLists.flat())]
+          let similarPool = [...new Set(geminiResults.flat())]
             .filter(a => !seedArtists.has(a.toLowerCase()));
+
+          // Fallback to LFM artist.getSimilar if Gemini returns nothing
+          if (similarPool.length === 0) {
+            const lfmLists = await Promise.all(
+              validSeeds.map(async ({ artist }) => {
+                try {
+                  const qs = new URLSearchParams({
+                    method: 'artist.getSimilar', artist,
+                    api_key: LASTFM_KEY, format: 'json', limit: '10', autocorrect: '1',
+                  });
+                  const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+                  if (!r.ok) return [];
+                  const d = await r.json();
+                  return (d.similarartists?.artist || []).slice(0, 8).map(a => a.name);
+                } catch { return []; }
+              })
+            );
+            similarPool = [...new Set(lfmLists.flat())].filter(a => !seedArtists.has(a.toLowerCase()));
+          }
 
           // ── STEP 2: LFM artist.getTopTracks for similar artists (parallel) ──
           updateSeedInfo('🎵 Caricando brani...');
