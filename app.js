@@ -17,6 +17,10 @@ const RARE_POP_MAX    = 40;  // filter out mainstream hits (pop > this)
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
 const LASTFM_KEY      = 'acd1fbf80c19d2febdf1bf378293eedf';
 const LASTFM_SECRET   = 'acd1fbf80c19d2febdf1bf378293eedf';
+const SPOTIFY_CLIENT_ID = '5d04043e27d04cee91b233ab4e7791fc';
+const SPOTIFY_SECRET    = '14dce712909a4311986a2c86dfae9848';
+const SPOTIFY_BASE      = 'https://api.spotify.com/v1';
+const SPOTIFY_AUTH      = 'https://accounts.spotify.com/api/token';
 const LASTFM_BASE     = 'https://ws.audioscrobbler.com';
 const LISTEN_LONG_SEC = 30;  // seconds → implicit like signal
 const LISTEN_SKIP_SEC = 10;  // seconds → implicit dislike signal
@@ -255,6 +259,10 @@ const S = {
   dislikeTotal: 0,          // normalization counter for dislikeVec
   artistCooldown: {},       // artistKey → timestamp of last queue appearance (Plan B)
   frontierTracks: [],       // recently surfaced tracks used as seeds for constellation chaining
+  spotifyToken: null,       // Spotify client-credentials access token
+  spotifyTokenExp: 0,       // token expiry timestamp (ms)
+  spotifyCache: {},         // track key -> {energy,valence,tempo,key,mode,spotifyId,ts}
+  audioProfile: null,       // computed stats from liked tracks audio features
 
   // Player
   audio: new Audio(),
@@ -330,6 +338,10 @@ function saveState() {
       dislikeTotal:   S.dislikeTotal,
       artistCooldown: S.artistCooldown,
       frontierTracks: S.frontierTracks.slice(-10),
+      spotifyCache:   Object.fromEntries(
+        Object.entries(S.spotifyCache).filter(([,v]) => Date.now() - (v.ts||0) < 30*86400_000).slice(-800)
+      ),
+      audioProfile:   S.audioProfile,
     }));
   } catch(e) { console.warn('save failed', e); }
 }
@@ -362,6 +374,8 @@ function loadState() {
     S.dislikeTotal   = d.dislikeTotal   || 0;
     S.artistCooldown = d.artistCooldown || {};
     S.frontierTracks = d.frontierTracks || [];
+    S.spotifyCache   = d.spotifyCache   || {};
+    S.audioProfile   = d.audioProfile   || null;
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -1233,6 +1247,147 @@ const LastFMEngine = {
     } catch {}
   }
 };
+// ─── SPOTIFY ENGINE ───────────────────────────────────────────────
+const SpotifyEngine = {
+  async _getToken() {
+    if (S.spotifyToken && Date.now() < S.spotifyTokenExp - 60_000) return S.spotifyToken;
+    try {
+      const creds = btoa(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_SECRET}`);
+      const r = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Authorization': 'Basic ' + creds, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=client_credentials'
+      });
+      const d = await r.json();
+      if (!d.access_token) return null;
+      S.spotifyToken = d.access_token;
+      S.spotifyTokenExp = Date.now() + d.expires_in * 1000;
+      return S.spotifyToken;
+    } catch { return null; }
+  },
+
+  async _searchId(track) {
+    const token = await this._getToken();
+    if (!token) return null;
+    try {
+      if (track.isrc) {
+        const r = await fetch(`${SPOTIFY_BASE}/search?q=isrc:${encodeURIComponent(track.isrc)}&type=track&limit=1`, { headers: { 'Authorization': 'Bearer ' + token } });
+        const d = await r.json();
+        const id = d.tracks?.items?.[0]?.id;
+        if (id) return id;
+      }
+      if (track.t && track.a) {
+        const q = encodeURIComponent(`track:${track.t} artist:${track.a}`);
+        const r = await fetch(`${SPOTIFY_BASE}/search?q=${q}&type=track&limit=1`, { headers: { 'Authorization': 'Bearer ' + token } });
+        const d = await r.json();
+        return d.tracks?.items?.[0]?.id || null;
+      }
+    } catch {}
+    return null;
+  },
+
+  async getFeatures(track) {
+    const ck = track.isrc || `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    if (S.spotifyCache[ck]) return S.spotifyCache[ck];
+    try {
+      const sid = await this._searchId(track);
+      if (!sid) return null;
+      const token = await this._getToken();
+      const r = await fetch(`${SPOTIFY_BASE}/audio-features/${sid}`, { headers: { 'Authorization': 'Bearer ' + token } });
+      const f = await r.json();
+      if (!f || f.energy == null) return null;
+      const result = { energy: f.energy, valence: f.valence, tempo: f.tempo,
+                       key: f.key, mode: f.mode, danceability: f.danceability,
+                       acousticness: f.acousticness, instrumentalness: f.instrumentalness,
+                       spotifyId: sid, ts: Date.now() };
+      S.spotifyCache[ck] = result;
+      return result;
+    } catch { return null; }
+  },
+
+  async buildProfile() {
+    if (S.myLiked.length < 3) return;
+    const feats = [];
+    for (const t of S.myLiked.slice(-25)) {
+      await sleep(120);
+      const f = await this.getFeatures(t);
+      if (f) feats.push(f);
+    }
+    if (feats.length < 3) return;
+    const avg = k => feats.reduce((s, f) => s + f[k], 0) / feats.length;
+    const std = (k, m) => Math.sqrt(feats.reduce((s, f) => s + (f[k] - m) ** 2, 0) / feats.length);
+    const eM = avg('energy'), vM = avg('valence'), tM = avg('tempo');
+    S.audioProfile = {
+      energy:  { mean: eM, std: Math.max(std('energy',  eM), 0.12) },
+      valence: { mean: vM, std: Math.max(std('valence', vM), 0.15) },
+      tempo:   { mean: tM, std: Math.max(std('tempo',   tM), 20)   },
+      count: feats.length
+    };
+    saveState();
+  },
+
+  passesFilter(track) {
+    if (!S.audioProfile || S.audioProfile.count < 3) return true;
+    const ck = track.isrc || `${(track.a||'').toLowerCase().trim()}|${(track.t||'').toLowerCase().trim()}`;
+    const f = S.spotifyCache[ck];
+    if (!f) return true;
+    const { energy, valence, tempo } = S.audioProfile;
+    return Math.abs(f.energy  - energy.mean)  <= 2.2 * energy.std
+        && Math.abs(f.valence - valence.mean) <= 2.2 * valence.std
+        && Math.abs(f.tempo   - tempo.mean)   <= 2.2 * tempo.std;
+  },
+
+  async getRecsForProfile() {
+    if (!S.audioProfile || S.audioProfile.count < 3) return [];
+    const token = await this._getToken();
+    if (!token) return [];
+    try {
+      const topArtists = Object.entries(S.taste.artists || {})
+        .sort((a, b) => b[1].liked - a[1].liked).slice(0, 3).map(([a]) => a);
+      const artistIds = [];
+      for (const a of topArtists) {
+        await sleep(100);
+        try {
+          const r = await fetch(`${SPOTIFY_BASE}/search?q=${encodeURIComponent('artist:' + a)}&type=artist&limit=1`, { headers: { 'Authorization': 'Bearer ' + token } });
+          const d = await r.json();
+          const id = d.artists?.items?.[0]?.id;
+          if (id) artistIds.push(id);
+        } catch {}
+      }
+      if (!artistIds.length) return [];
+      const { energy, valence, tempo } = S.audioProfile;
+      const params = new URLSearchParams({
+        seed_artists: artistIds.slice(0, 3).join(','), limit: '12',
+        target_energy:  energy.mean.toFixed(3),  target_valence: valence.mean.toFixed(3),
+        target_tempo:   Math.round(tempo.mean),
+        min_energy:     Math.max(0, energy.mean  - 2 * energy.std).toFixed(3),
+        max_energy:     Math.min(1, energy.mean  + 2 * energy.std).toFixed(3),
+        min_valence:    Math.max(0, valence.mean - 2 * valence.std).toFixed(3),
+        max_valence:    Math.min(1, valence.mean + 2 * valence.std).toFixed(3),
+      });
+      const r = await fetch(`${SPOTIFY_BASE}/recommendations?${params}`, { headers: { 'Authorization': 'Bearer ' + token } });
+      const d = await r.json();
+      const result = [];
+      for (const sp of (d.tracks || []).slice(0, 10)) {
+        await sleep(150);
+        try {
+          const artistName = sp.artists?.[0]?.name || '';
+          const found = await API.search(`${sp.name} ${artistName}`, null);
+          if (!_tidalMatchOk(artistName, sp.name, found)) continue;
+          const t = fromTidal(found);
+          if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
+          if (t.pop > RARE_POP_MAX) continue;
+          const ck = t.isrc || `${(t.a||'').toLowerCase().trim()}|${(t.t||'').toLowerCase().trim()}`;
+          if (!S.spotifyCache[ck]) S.spotifyCache[ck] = { energy: sp.energy || energy.mean, valence: sp.valence || valence.mean, tempo: sp.tempo || tempo.mean, ts: Date.now() };
+          t._src = 'spotify_rec';
+          result.push(t);
+        } catch {}
+      }
+      return result;
+    } catch { return []; }
+  }
+};
+
 // ─── FEATURE VECTORS ──────────────────────────────────────────────
 // Builds a sparse vector from a track's Discogs metadata + Last.fm tags.
 // Keys: sty: (Discogs style), gen: (genre), tag: (Last.fm), dec: (decade),
@@ -1357,6 +1512,19 @@ const Scorer = {
       dislikePenalty = FeatureVec.sim(dvec, vec) * 0.35;
     }
 
+    // 6b. Audio affinity bonus — reward tracks matching user's audio profile
+    let audioBonus = 0;
+    if (S.audioProfile?.count >= 3) {
+      const spFeats = S.spotifyCache[ck];
+      if (spFeats) {
+        const { energy, valence, tempo } = S.audioProfile;
+        const eAff = Math.max(0, 1 - Math.abs(spFeats.energy  - energy.mean)  / (2 * energy.std));
+        const vAff = Math.max(0, 1 - Math.abs(spFeats.valence - valence.mean) / (2 * valence.std));
+        const tAff = Math.max(0, 1 - Math.abs(spFeats.tempo   - tempo.mean)   / (2 * tempo.std));
+        audioBonus = ((eAff + vAff + tAff) / 3) * 0.12;
+      }
+    }
+
     // 6. Discovery bonus — reward genuinely new artists (Plan F)
     // Cache liked artist set per scoring batch (invalidated when myLiked grows)
     if (!Scorer._likedArtistCache || Scorer._likedArtistCacheLen !== S.myLiked.length) {
@@ -1370,7 +1538,7 @@ const Scorer = {
     const _mature = S.profileTotal > 10;
     const [_aw, _qw, _nw, _dw] = _mature ? [0.60, 0.20, 0.12, 0.08] : [0.40, 0.25, 0.20, 0.15];
     const raw   = affinity * _aw + quality * _qw + novelty * _nw + diversity * _dw
-                  + discoveryBonus - dislikePenalty;
+                  + discoveryBonus + audioBonus - dislikePenalty;
     const total = Math.max(0, Math.min(1, raw));
     return { total, affinity, quality, novelty, diversity, vec };
   }
@@ -1565,6 +1733,7 @@ const Queue = {
               if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
               if (t.pop > RARE_POP_MAX) continue;
               if (!_passesGenreFilter(t)) continue; // Plan D
+              if (!SpotifyEngine.passesFilter(t)) continue;
               t._src = 'lfm_similar';               // Plan C
               newTracks.push(t);
             }
@@ -1608,6 +1777,7 @@ const Queue = {
                   if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
                   if (t.pop > RARE_POP_MAX) continue;
                   if (!_passesGenreFilter(t)) continue;
+                  if (!SpotifyEngine.passesFilter(t)) continue;
                   t._src = 'lfm_artist';
                   newTracks.push(t);
                 }
@@ -1637,7 +1807,17 @@ const Queue = {
           if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) continue;
           if (t.pop > RARE_POP_MAX) continue;
           if (!_passesGenreFilter(t)) continue; // Plan D
+          if (!SpotifyEngine.passesFilter(t)) continue;
           t._src = 'tidal_rec';                 // Plan C
+          newTracks.push(t);
+        }
+      }
+
+      // ── SPOTIFY AUDIO-PROFILED RECOMMENDATIONS ──────────────────
+      if (!forceSeedId && S.audioProfile?.count >= 3) {
+        const spRecs = await SpotifyEngine.getRecsForProfile();
+        for (const t of spRecs) {
+          if (!_passesGenreFilter(t)) continue;
           newTracks.push(t);
         }
       }
@@ -2295,6 +2475,7 @@ function handleLike(track) {
       EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
         if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
       }).catch(() => {});
+      SpotifyEngine.buildProfile();
       if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
       saveState();
       updateSidebarStats();
@@ -2319,6 +2500,7 @@ function handleSwipeLike(track) {
     EnrichEngine.getFeatures(track.a || '', track.t || '').then(feats => {
       if (feats?.tags?.length) { UserProfile.seedFromLiked(); saveState(); }
     }).catch(() => {});
+    SpotifyEngine.buildProfile();
     if (track.source === 'discogs') DiscogsEngine.recordLike(S.activePreset);
     saveState();
     updateSidebarStats();
@@ -3454,6 +3636,7 @@ async function init() {
   // Runs lazily so it never blocks the UI. Profile improves with each batch.
   setTimeout(() => EnrichEngine.enrichLikedBg(), 5000);
   setTimeout(() => MBEngine.enrichBg(), 12000);
+  setTimeout(() => SpotifyEngine.buildProfile(), 20000);
   if (S.lbUser) { setTimeout(() => LBEngine.loadRecs(), 8000); }
   updateSettingsBadges();
   // Restore settings form values for connected services
