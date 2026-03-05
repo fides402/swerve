@@ -2623,7 +2623,7 @@ const Player = {
     updateProgressUI(ratio, cur, dur);
     updateCardProgress(ratio);
     // Pre-fetch next track's stream URL so background track transitions are instant
-    if (dur > 0 && dur - cur <= 30) {
+    if (dur > 0 && dur - cur <= 45) {
       const nextIdx = this._nextIdx();
       if (nextIdx !== null) this._prefetch(S.playerQueue[nextIdx]);
     }
@@ -2652,11 +2652,39 @@ const Player = {
 
   _onError() {
     const t = S.playerTrack;
-    if (t && t.pre && S.audio.src !== t.pre) {
+    if (!t) return;
+
+    if (t.pre && S.audio.src !== t.pre) {
+      // Has Spotify preview fallback — use it
       S.audio.src = t.pre;
       S.isPreview = true;
       S.audio.play().catch(() => { });
       updatePlayerIsPreview();
+      return;
+    }
+
+    // No preview fallback (album mode / Tidal-only track).
+    // Re-fetch a fresh stream URL and retry. If that also fails, skip to next.
+    if (t.tidalId && !this._errorRetrying) {
+      this._errorRetrying = true;
+      delete this._streamCache[t.tidalId]; // invalidate stale cache
+      const trackRef = t;
+      (async () => {
+        try {
+          const q = S.streamQuality || 'HIGH';
+          let url = await API.getStreamUrl(trackRef.tidalId, q);
+          if (!url && q === 'LOSSLESS') url = await API.getStreamUrl(trackRef.tidalId, 'HIGH');
+          if (!url) url = await API.getStreamUrl(trackRef.tidalId, 'LOW');
+          if (url && S.playerTrack === trackRef) {
+            S.audio.src = url;
+            await S.audio.play().catch(() => { });
+          } else if (!url) {
+            // Stream fetch failed — skip to next track
+            this.next();
+          }
+        } catch { this.next(); }
+        finally { this._errorRetrying = false; }
+      })();
     }
   }
 };
