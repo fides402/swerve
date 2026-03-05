@@ -956,6 +956,65 @@ const DiscogsEngine = {
     return tracks;
   },
 
+  // ── Background enrichment of existing liked tracks ────────────
+  // Iterates myLiked tracks that don't have _originalYear yet,
+  // fetches Discogs master year + genres/styles, updates taste profile.
+  // Throttled to ~1 req/s to stay within Discogs rate limits.
+  _enrichRunning: false,
+  async enrichInsightsBg() {
+    if (this._enrichRunning) return;
+    const toEnrich = S.myLiked.filter(t =>
+      !t._originalYear && t.a && (t.al || t.t)
+    );
+    if (!toEnrich.length) return;
+    this._enrichRunning = true;
+    console.log(`[Discogs] enriching ${toEnrich.length} liked tracks in background…`);
+    try {
+      for (const t of toEnrich) {
+        await sleep(1100); // stay under 60 req/min
+        const master = await this._lookupMasterYear(t.a, t.al || t.t);
+        if (!master) continue;
+        // Store original year
+        t._originalYear = String(master.year);
+        // Record genres/styles
+        for (const g of master.genres) {
+          S.taste.genres[g] = S.taste.genres[g] || { liked: 0 };
+          S.taste.genres[g].liked++;
+        }
+        for (const st of master.styles) {
+          S.taste.styles[st] = S.taste.styles[st] || { liked: 0 };
+          S.taste.styles[st].liked++;
+        }
+        // Refresh insights chart if the section is open
+        if (S.view === 'insights') {
+          const styleEntries = Object.entries(S.taste.styles)
+            .map(([s, v]) => ({ s, count: v.liked || 0 }))
+            .filter(e => e.count > 0).sort((a, b) => b.count - a.count).slice(0, 12);
+          _insightsBarChart($('insights-styles-chart'), styleEntries, e => e.s);
+          // Also refresh decades (now that _originalYear is set)
+          const discovered = S.myLiked.filter(t2 => !t2.sid || !CATALOG.some(c => c.sid === t2.sid));
+          const decCounts = {};
+          for (const t2 of discovered) {
+            const y = parseInt(t2._originalYear || t2.y || '2000');
+            if (y) { const d = Math.floor(y / 10) * 10; decCounts[d] = (decCounts[d] || 0) + 1; }
+          }
+          const decEntries = Object.entries(decCounts)
+            .map(([d, count]) => ({ d: String(d), count })).sort((a, b) => b.count - a.count);
+          _insightsBarChart($('insights-decades-chart'), decEntries, e => e.d + 's');
+          const topDec = decEntries[0];
+          const kpiDec = $('kpi-decade');
+          if (kpiDec && topDec) kpiDec.textContent = topDec.d + 's';
+        }
+        // Save periodically (every 5 tracks)
+        if (S.myLiked.indexOf(t) % 5 === 0) saveState();
+      }
+    } finally {
+      this._enrichRunning = false;
+      saveState();
+      console.log('[Discogs] enrichment complete');
+    }
+  },
+
   // ── Daily recommendations ──────────────────────────────────────
   // Look up the Discogs master release for an artist+title.
   // Returns { year, genres, styles } of the earliest known press, or null.
@@ -4187,95 +4246,90 @@ const AlbumMode = {
 };
 
 // ─── INSIGHTS RENDERER ────────────────────────────────────────────
-function renderInsights() {
-  // ── KPIs ──
-  const discovered = S.myLiked.filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid));
-  const uniqueArtists = new Set(discovered.map(t => (t.a || '').toLowerCase().trim()).filter(Boolean));
-  const topDecEntry = Object.entries(S.taste.decades || {})
-    .map(([d, v]) => ({ d, score: (v.liked || 0) - (v.skipped || 0) }))
-    .filter(x => x.score > 0)
-    .sort((a, b) => b.score - a.score)[0];
 
+// Helper: render a bar chart into an element.
+function _insightsBarChart(el, entries, labelFn) {
+  if (!el) return;
+  if (!entries.length) { el.innerHTML = '<div class="insights-empty">Nessun dato ancora.</div>'; return; }
+  const max = entries[0].count;
+  el.innerHTML = entries.map(e => `
+    <div class="insights-bar-row">
+      <div class="insights-bar-label" title="${escHtml(labelFn(e))}">${escHtml(labelFn(e))}</div>
+      <div class="insights-bar-track">
+        <div class="insights-bar-fill" style="width:${Math.round((e.count / max) * 100)}%"></div>
+      </div>
+      <div class="insights-bar-count">${e.count}</div>
+    </div>`).join('');
+}
+
+function renderInsights() {
+  // ── Build discovered liked tracks (exclude pure-catalog entries) ──
+  const discovered = S.myLiked.filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid));
+
+  // ── Compute decades directly from myLiked using _originalYear when available ──
+  const decadeCounts = {};
+  for (const t of discovered) {
+    const year = parseInt(t._originalYear || t.y || '2000');
+    if (!year) continue;
+    const dec = Math.floor(year / 10) * 10;
+    decadeCounts[dec] = (decadeCounts[dec] || 0) + 1;
+  }
+  const decEntries = Object.entries(decadeCounts)
+    .map(([d, count]) => ({ d: String(d), count }))
+    .sort((a, b) => b.count - a.count);
+
+  // ── Compute artists directly from myLiked ──
+  const artistCounts = {};
+  for (const t of discovered) {
+    const a = (t.a || '').trim();
+    if (a) artistCounts[a] = (artistCounts[a] || 0) + 1;
+  }
+  const artistEntries = Object.entries(artistCounts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  // ── KPIs ──
+  const uniqueArtists = new Set(discovered.map(t => (t.a || '').toLowerCase().trim()).filter(Boolean));
+  const topDec = decEntries[0];
   const kpiDisc = $('kpi-discovered');
   const kpiArt  = $('kpi-artists');
   const kpiDec  = $('kpi-decade');
   if (kpiDisc) kpiDisc.textContent = discovered.length;
   if (kpiArt)  kpiArt.textContent  = uniqueArtists.size;
-  if (kpiDec)  kpiDec.textContent  = topDecEntry ? topDecEntry.d + 's' : '–';
-
+  if (kpiDec)  kpiDec.textContent  = topDec ? topDec.d + 's' : '–';
   const sub = $('insights-subtitle');
   if (sub) sub.textContent = `Basato su ${discovered.length} brani scoperti e salvati`;
 
-  // ── Artists chart ──
-  const artistChart = $('insights-artists-chart');
-  if (artistChart) {
-    const entries = Object.entries(S.taste.artists || {})
-      .map(([name, v]) => ({ name, score: (v.liked || 0) - (v.skipped || 0), liked: v.liked || 0 }))
-      .filter(e => e.score > 0)
-      .sort((a, b) => b.liked - a.liked)
-      .slice(0, 8);
-    if (entries.length === 0) {
-      artistChart.innerHTML = '<div class="insights-empty">Nessun dato ancora — inizia a scoprire musica!</div>';
-    } else {
-      const max = entries[0].liked;
-      artistChart.innerHTML = entries.map(e => `
-        <div class="insights-bar-row">
-          <div class="insights-bar-label" title="${escHtml(e.name)}">${escHtml(e.name)}</div>
-          <div class="insights-bar-track">
-            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
-          </div>
-          <div class="insights-bar-count">${e.liked}</div>
-        </div>`).join('');
-    }
-  }
+  // ── Artists chart (from myLiked directly) ──
+  _insightsBarChart($('insights-artists-chart'), artistEntries, e => e.name);
 
-  // ── Decades chart ──
-  const decChart = $('insights-decades-chart');
-  if (decChart) {
-    const entries = Object.entries(S.taste.decades || {})
-      .map(([d, v]) => ({ d, score: (v.liked || 0) - (v.skipped || 0), liked: v.liked || 0 }))
-      .filter(e => e.liked > 0)
-      .sort((a, b) => b.liked - a.liked);
-    if (entries.length === 0) {
-      decChart.innerHTML = '<div class="insights-empty">Nessun dato ancora.</div>';
-    } else {
-      const max = entries[0].liked;
-      decChart.innerHTML = entries.map(e => `
-        <div class="insights-bar-row">
-          <div class="insights-bar-label">${e.d}s</div>
-          <div class="insights-bar-track">
-            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
-          </div>
-          <div class="insights-bar-count">${e.liked}</div>
-        </div>`).join('');
-    }
-  }
+  // ── Decades chart (from myLiked using original year) ──
+  _insightsBarChart($('insights-decades-chart'), decEntries, e => e.d + 's');
 
-  // ── Styles chart (top 10 Discogs styles from liked tracks) ──
-  const styleChart = $('insights-styles-chart');
-  if (styleChart) {
-    const entries = Object.entries(S.taste.styles || {})
-      .map(([s, v]) => ({ s, liked: v.liked || 0 }))
-      .filter(e => e.liked > 0)
-      .sort((a, b) => b.liked - a.liked)
-      .slice(0, 10);
-    if (entries.length === 0) {
-      styleChart.innerHTML = '<div class="insights-empty">Verrà popolato man mano che scopri brani.</div>';
+  // ── Styles chart (from S.taste.styles, populated by Discogs enrichment) ──
+  const styleEntries = Object.entries(S.taste.styles || {})
+    .map(([s, v]) => ({ s, count: v.liked || 0 }))
+    .filter(e => e.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12);
+  const styleEl = $('insights-styles-chart');
+  if (styleEl) {
+    if (!styleEntries.length) {
+      const pending = discovered.filter(t => !t._originalYear).length;
+      styleEl.innerHTML = pending > 0
+        ? `<div class="insights-empty">Analisi in corso… (${pending} brani rimasti da classificare)</div>`
+        : '<div class="insights-empty">Nessun dato disponibile.</div>';
     } else {
-      const max = entries[0].liked;
-      styleChart.innerHTML = entries.map(e => `
-        <div class="insights-bar-row">
-          <div class="insights-bar-label" title="${escHtml(e.s)}">${escHtml(e.s)}</div>
-          <div class="insights-bar-track">
-            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
-          </div>
-          <div class="insights-bar-count">${e.liked}</div>
-        </div>`).join('');
+      _insightsBarChart(styleEl, styleEntries, e => e.s);
     }
   }
 
   // ── Daily recs ──
   _renderDiscogsRecs();
+
+  // ── Background enrichment for existing liked tracks without _originalYear ──
+  DiscogsEngine.enrichInsightsBg();
 }
 
 async function _renderDiscogsRecs(force = false) {
