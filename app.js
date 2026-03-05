@@ -32,7 +32,13 @@ const GEMINI_MODEL   = 'gemini-2.5-flash';
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const YT_KEY    = 'AIzaSyBiNS-Xtp-Ck-z39OAxVCGtqZNx6h-pVW8';
 const YT_BASE   = 'https://www.googleapis.com/youtube/v3';
-const YT_HANDLE = 'andrenavarroII';
+const YT_CHANNELS = [
+  'andrenavarroII',
+  'Musicforemptyrooms',
+  'oleg_samples',
+  'librariessountracksandrelated',
+  'VinyleArcheologie',
+];
 const GROQ_KEY  = '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';
 const GROQ_BASE = 'https://api.groq.com/openai/v1/chat/completions';
 
@@ -274,9 +280,7 @@ const S = {
   genreSeeds: [],           // valid Spotify/EveryNoise genre seed names from available-genre-seeds
   frontierGenres: [],       // genres discovered from recs' artists → seeds for next batch (genre chaining)
   // ── YOUTUBE / GROQ ───────────────────────────────────────────────
-  ytVideos:     [],     // [{title, videoId}] — cached channel videos
-  ytLoadedAt:   0,      // timestamp of last YT fetch
-  ytPlaylistId: null,   // uploads playlist ID (persisted)
+  ytChannelData: {},    // { [handle]: { playlistId, videos, loadedAt } }
   groqCache:    {},     // videoTitle → {artist, track} | null (persisted, pruned)
 
   // Player
@@ -359,9 +363,11 @@ function saveState() {
         Object.entries(S.spotifyCache).filter(([, v]) => Date.now() - (v.ts || 0) < 30 * 86400_000).slice(-800)
       ),
       audioProfile:   S.audioProfile,
-      ytLoadedAt:     S.ytLoadedAt,
-      ytPlaylistId:   S.ytPlaylistId,
-      ytVideos:       S.ytVideos.slice(0, 200),   // persist so we skip re-fetch on reload
+      ytChannelData:  Object.fromEntries(           // persist so we skip re-fetch on reload
+        Object.entries(S.ytChannelData).map(([h, d]) =>
+          [h, { ...d, videos: (d.videos || []).slice(0, 200) }]
+        )
+      ),
       groqCache:      Object.fromEntries(Object.entries(S.groqCache).slice(-500)), // cap 500
     }));
   } catch (e) { console.warn('save failed', e); }
@@ -399,9 +405,7 @@ function loadState() {
     S.audioProfile    = d.audioProfile    || null;
     S.genreSeeds      = d.genreSeeds      || [];
     S.frontierGenres  = d.frontierGenres  || [];
-    S.ytLoadedAt     = d.ytLoadedAt     || 0;
-    S.ytPlaylistId   = d.ytPlaylistId   || null;
-    S.ytVideos       = d.ytVideos       || [];
+    S.ytChannelData  = d.ytChannelData  || {};
     S.groqCache      = d.groqCache      || {};
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
@@ -1520,7 +1524,8 @@ const SpotifyEngine = {
 };
 
 // ─── YOUTUBE ENGINE ───────────────────────────────────────────────
-// Fetches video list from @andrenavarroII and samples titles as music seeds.
+// Fetches video lists from all YT_CHANNELS and samples titles as music seeds.
+// On each refill a channel is picked at random, so discovery rotates across sources.
 const YouTubeEngine = {
 
   async _get(url) {
@@ -1533,23 +1538,28 @@ const YouTubeEngine = {
     } finally { clearTimeout(tid); }
   },
 
-  async _getUploadsPlaylistId() {
-    if (S.ytPlaylistId) return S.ytPlaylistId;
+  async _getUploadsPlaylistId(handle) {
+    const cd = S.ytChannelData[handle] || {};
+    if (cd.playlistId) return cd.playlistId;
     try {
       const d = await this._get(
-        `${YT_BASE}/channels?part=contentDetails&forHandle=${YT_HANDLE}&key=${YT_KEY}`
+        `${YT_BASE}/channels?part=contentDetails&forHandle=${handle}&key=${YT_KEY}`
       );
       const pid = d.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
-      if (pid) { S.ytPlaylistId = pid; saveState(); }
+      if (pid) {
+        S.ytChannelData[handle] = { ...cd, playlistId: pid };
+        saveState();
+      }
       return pid || null;
     } catch { return null; }
   },
 
-  // Fetch up to 3 pages (≤150 videos). Re-fetches after 6h.
-  async load() {
-    if (S.ytVideos.length > 50 && Date.now() - S.ytLoadedAt < 6 * 3600_000) return;
+  // Fetch up to 3 pages (≤150 videos) for a single channel. Re-fetches after 6h.
+  async _loadChannel(handle) {
+    const cd = S.ytChannelData[handle] || {};
+    if ((cd.videos || []).length > 50 && Date.now() - (cd.loadedAt || 0) < 6 * 3600_000) return;
     try {
-      const pid = await this._getUploadsPlaylistId();
+      const pid = await this._getUploadsPlaylistId(handle);
       if (!pid) return;
       const videos = [];
       let pageToken = '';
@@ -1570,17 +1580,27 @@ const YouTubeEngine = {
         if (!pageToken) break;
         await sleep(300);
       }
-      S.ytVideos   = videos;
-      S.ytLoadedAt = Date.now();
-      console.log(`[YT] loaded ${S.ytVideos.length} videos from @${YT_HANDLE}`);
-    } catch(e) { console.warn('[YT] load failed', e); }
+      S.ytChannelData[handle] = { ...S.ytChannelData[handle], videos, loadedAt: Date.now() };
+      console.log(`[YT] loaded ${videos.length} videos from @${handle}`);
+    } catch(e) { console.warn(`[YT] load failed for @${handle}`, e); }
   },
 
-  // Recency-biased sample (index 0 = newest upload). Max 2 per duplicated artist name.
+  // Load all channels sequentially (each respects its own 6h cache).
+  async load() {
+    for (const handle of YT_CHANNELS) {
+      await this._loadChannel(handle);
+    }
+    saveState();
+  },
+
+  // Pick a random channel, then return a recency-biased sample from it.
   getSample(n = 12) {
-    if (!S.ytVideos.length) return [];
-    const pool = S.ytVideos, len = pool.length;
-    const weights = pool.map((_, i) => 1 + ((len - i) / len) * 4); // 1x–5x
+    const available = YT_CHANNELS.filter(h => (S.ytChannelData[h]?.videos || []).length >= 3);
+    if (!available.length) return [];
+    const handle = available[Math.floor(Math.random() * available.length)];
+    const pool = S.ytChannelData[handle].videos, len = pool.length;
+    console.log(`[YT] sampling from @${handle} (${len} videos)`);
+    const weights = pool.map((_, i) => 1 + ((len - i) / len) * 4); // 1x–5x recency bias
     const sumW = weights.reduce((s, w) => s + w, 0);
     const result = [], used = new Set();
     let attempts = 0;
@@ -2008,7 +2028,7 @@ const Queue = {
       // 3. Find track on Monochrome (or any track by that artist as fallback)
       // 4. Fan out: LFM track.getSimilar + Spotify /recommendations seed_tracks
       let ytParsed = [];
-      if (!forceSeedId && S.ytVideos.length >= 3) {
+      if (!forceSeedId && YT_CHANNELS.some(h => (S.ytChannelData[h]?.videos || []).length >= 3)) {
         try {
           updateLoadingStep('Analisi video YouTube…', '');
           const sample = YouTubeEngine.getSample(12);
