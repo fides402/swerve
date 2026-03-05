@@ -282,6 +282,9 @@ const S = {
   // ── YOUTUBE / GROQ ───────────────────────────────────────────────
   ytChannelData: {},    // { [handle]: { playlistId, videos, loadedAt } }
   groqCache:    {},     // videoTitle → {artist, track} | null (persisted, pruned)
+  // ── INSIGHTS / DISCOGS ──────────────────────────────────────────
+  discogsRecs:     [],  // [{title,artist,year,url,thumb,genres,styles}] — daily recs
+  discogsRecsDate: '',  // 'YYYY-MM-DD' of last fetch
 
   // Player
   audio: new Audio(),
@@ -369,6 +372,8 @@ function saveState() {
         )
       ),
       groqCache:      Object.fromEntries(Object.entries(S.groqCache).slice(-500)), // cap 500
+      discogsRecs:     S.discogsRecs,
+      discogsRecsDate: S.discogsRecsDate,
     }));
   } catch (e) { console.warn('save failed', e); }
 }
@@ -405,8 +410,10 @@ function loadState() {
     S.audioProfile    = d.audioProfile    || null;
     S.genreSeeds      = d.genreSeeds      || [];
     S.frontierGenres  = d.frontierGenres  || [];
-    S.ytChannelData  = d.ytChannelData  || {};
-    S.groqCache      = d.groqCache      || {};
+    S.ytChannelData   = d.ytChannelData   || {};
+    S.groqCache       = d.groqCache       || {};
+    S.discogsRecs     = d.discogsRecs     || [];
+    S.discogsRecsDate = d.discogsRecsDate || '';
     S.seenIds    = new Set(d.seenIds    || []);
     S.volume     = d.volume     != null ? d.volume : 0.8;
     S.shuffle    = d.shuffle    || false;
@@ -943,7 +950,109 @@ const DiscogsEngine = {
       }
     }
     return tracks;
-  }
+  },
+
+  // ── Daily recommendations ──────────────────────────────────────
+  // Build a set of artist+album keys already in library (for deduplication).
+  _buildLibSet() {
+    const discovered = S.myLiked.filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid));
+    return new Set([...CATALOG, ...discovered].map(t =>
+      `${(t.a || '').toLowerCase().trim()}::${(t.al || t.t || '').toLowerCase().trim()}`
+    ));
+  },
+
+  // Score a Discogs result against the user's taste profile.
+  _scoreRec(result, topArtistSet, topDecadeSet) {
+    let s = 0;
+    const artist = (result.artist || '').toLowerCase();
+    if (topArtistSet.has(artist)) s += 4;
+    else if ([...topArtistSet].some(a => artist.includes(a) || a.includes(artist))) s += 2;
+    const year = parseInt(result.year) || 0;
+    if (year > 0 && topDecadeSet.has(String(Math.floor(year / 10) * 10))) s += 2;
+    const fmts = (result.formats || []).map(f => f.toLowerCase());
+    if (fmts.some(f => /\blp\b|album/i.test(f))) s += 1;
+    if (fmts.some(f => /compil|various/i.test(f))) s -= 2;
+    return s;
+  },
+
+  async getDailyRecs(force = false) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!force && S.discogsRecsDate === today && S.discogsRecs.length >= 10) return S.discogsRecs;
+
+    // Build taste inputs
+    const tasteArtists = Object.entries(S.taste.artists || {})
+      .map(([name, v]) => ({ name, score: (v.liked || 0) - (v.skipped || 0) }))
+      .filter(a => a.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6).map(a => a.name);
+
+    // Fallback: pull artists from myLiked directly
+    if (tasteArtists.length < 2) {
+      const counts = {};
+      S.myLiked.forEach(t => { if (t.a) counts[t.a] = (counts[t.a] || 0) + 1; });
+      Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6)
+        .forEach(([n]) => { if (!tasteArtists.includes(n)) tasteArtists.push(n); });
+    }
+    if (tasteArtists.length === 0) return [];
+
+    const topArtistSet = new Set(tasteArtists.map(a => a.toLowerCase().trim()));
+    const topDecadeSet = new Set(
+      Object.entries(S.taste.decades || {})
+        .map(([d, v]) => ({ d, score: (v.liked || 0) - (v.skipped || 0) }))
+        .filter(x => x.score > 0).sort((a, b) => b.score - a.score)
+        .slice(0, 3).map(x => x.d)
+    );
+
+    const libSet     = this._buildLibSet();
+    const allResults = [];
+    const seenIds    = new Set();
+
+    for (const artist of tasteArtists) {
+      try {
+        await sleep(500);
+        const qs = new URLSearchParams({
+          artist: artist, type: 'release', per_page: '8', sort: 'year', sort_order: 'desc'
+        });
+        const data = await (await discogsFetch(`${DISCOGS_BASE}/database/search?${qs}`)).json();
+        for (const r of (data.results || [])) {
+          if (seenIds.has(r.id)) continue;
+          seenIds.add(r.id);
+          const dashIdx   = (r.title || '').indexOf(' - ');
+          const albumArtist = dashIdx > -1 ? r.title.slice(0, dashIdx) : artist;
+          const albumTitle  = dashIdx > -1 ? r.title.slice(dashIdx + 3) : r.title;
+          const key = `${albumArtist.toLowerCase().trim()}::${albumTitle.toLowerCase().trim()}`;
+          if (libSet.has(key)) continue;
+          allResults.push({
+            id: r.id, title: albumTitle, artist: albumArtist,
+            year: r.year || '',
+            url: `https://www.discogs.com${r.uri}`,
+            thumb: r.cover_image || r.thumb || '',
+            genres: r.genre || [], styles: r.style || [], formats: r.format || [],
+            _score: this._scoreRec(
+              { artist: albumArtist, year: r.year, formats: r.format || [] },
+              topArtistSet, topDecadeSet
+            ),
+          });
+        }
+      } catch(e) { console.warn(`[Discogs] recs search failed for "${artist}"`, e); }
+    }
+
+    // Sort by score, diversify (max 2 per artist), take top 10
+    allResults.sort((a, b) => b._score - a._score);
+    const artistCount = {}, final = [];
+    for (const r of allResults) {
+      const ak = r.artist.toLowerCase().trim();
+      if ((artistCount[ak] || 0) >= 2) continue;
+      artistCount[ak] = (artistCount[ak] || 0) + 1;
+      final.push(r);
+      if (final.length >= 10) break;
+    }
+
+    S.discogsRecs     = final;
+    S.discogsRecsDate = today;
+    saveState();
+    return final;
+  },
 };
 
 // ─── ENRICH ENGINE ────────────────────────────────────────────────
@@ -2536,8 +2645,9 @@ function showView(name) {
   const btn = document.querySelector(`.nav-btn[data-view="${name}"]`);
   if (btn) btn.classList.add('active');
 
-  if (name === 'library') renderLibrary();
+  if (name === 'library')  renderLibrary();
   if (name === 'playlists') renderPlaylists();
+  if (name === 'insights')  renderInsights();
 }
 
 // ─── DISCOVER UI ──────────────────────────────────────────────────
@@ -3720,6 +3830,9 @@ function initEvents() {
   $('full-album-btn').addEventListener('click', () => {
     if (S.playerTrack) AlbumMode.open(S.playerTrack);
   });
+
+  // Insights refresh button — forces new Discogs fetch ignoring daily cache
+  $('insights-refresh-btn')?.addEventListener('click', () => _renderDiscogsRecs(true));
   $('full-lyrics-btn').addEventListener('click', () => {
     S.lyricsOpen = !S.lyricsOpen;
     S.queueOpen = false;
@@ -3998,6 +4111,123 @@ const AlbumMode = {
     this._currentAlbumId = null;
   }
 };
+
+// ─── INSIGHTS RENDERER ────────────────────────────────────────────
+function renderInsights() {
+  // ── KPIs ──
+  const discovered = S.myLiked.filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid));
+  const uniqueArtists = new Set(discovered.map(t => (t.a || '').toLowerCase().trim()).filter(Boolean));
+  const topDecEntry = Object.entries(S.taste.decades || {})
+    .map(([d, v]) => ({ d, score: (v.liked || 0) - (v.skipped || 0) }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)[0];
+
+  const kpiDisc = $('kpi-discovered');
+  const kpiArt  = $('kpi-artists');
+  const kpiDec  = $('kpi-decade');
+  if (kpiDisc) kpiDisc.textContent = discovered.length;
+  if (kpiArt)  kpiArt.textContent  = uniqueArtists.size;
+  if (kpiDec)  kpiDec.textContent  = topDecEntry ? topDecEntry.d + 's' : '–';
+
+  const sub = $('insights-subtitle');
+  if (sub) sub.textContent = `Basato su ${discovered.length} brani scoperti e salvati`;
+
+  // ── Artists chart ──
+  const artistChart = $('insights-artists-chart');
+  if (artistChart) {
+    const entries = Object.entries(S.taste.artists || {})
+      .map(([name, v]) => ({ name, score: (v.liked || 0) - (v.skipped || 0), liked: v.liked || 0 }))
+      .filter(e => e.score > 0)
+      .sort((a, b) => b.liked - a.liked)
+      .slice(0, 8);
+    if (entries.length === 0) {
+      artistChart.innerHTML = '<div class="insights-empty">Nessun dato ancora — inizia a scoprire musica!</div>';
+    } else {
+      const max = entries[0].liked;
+      artistChart.innerHTML = entries.map(e => `
+        <div class="insights-bar-row">
+          <div class="insights-bar-label" title="${escHtml(e.name)}">${escHtml(e.name)}</div>
+          <div class="insights-bar-track">
+            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
+          </div>
+          <div class="insights-bar-count">${e.liked}</div>
+        </div>`).join('');
+    }
+  }
+
+  // ── Decades chart ──
+  const decChart = $('insights-decades-chart');
+  if (decChart) {
+    const entries = Object.entries(S.taste.decades || {})
+      .map(([d, v]) => ({ d, score: (v.liked || 0) - (v.skipped || 0), liked: v.liked || 0 }))
+      .filter(e => e.liked > 0)
+      .sort((a, b) => b.liked - a.liked);
+    if (entries.length === 0) {
+      decChart.innerHTML = '<div class="insights-empty">Nessun dato ancora.</div>';
+    } else {
+      const max = entries[0].liked;
+      decChart.innerHTML = entries.map(e => `
+        <div class="insights-bar-row">
+          <div class="insights-bar-label">${e.d}s</div>
+          <div class="insights-bar-track">
+            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
+          </div>
+          <div class="insights-bar-count">${e.liked}</div>
+        </div>`).join('');
+    }
+  }
+
+  // ── Daily recs ──
+  _renderDiscogsRecs();
+}
+
+async function _renderDiscogsRecs(force = false) {
+  const listEl  = $('insights-rec-list');
+  const dateEl  = $('insights-recs-date');
+  const refBtn  = $('insights-refresh-btn');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div class="insights-empty">Cerco consigli su Discogs…</div>';
+  if (refBtn) refBtn.classList.add('spinning');
+
+  try {
+    const recs = await DiscogsEngine.getDailyRecs(force);
+
+    if (dateEl) {
+      const d = S.discogsRecsDate;
+      dateEl.textContent = d ? `Aggiornato il ${d.split('-').reverse().join('/')}` : '';
+    }
+
+    if (!recs.length) {
+      listEl.innerHTML = '<div class="insights-empty">Aggiungi più brani ai preferiti per ricevere consigli personalizzati.</div>';
+      return;
+    }
+
+    listEl.innerHTML = recs.map((r, i) => {
+      const tags = [...r.styles.slice(0, 2), ...r.genres.slice(0, 1)].join(' · ');
+      const thumb = r.thumb && !r.thumb.includes('spacer.gif') ? r.thumb : '';
+      return `
+        <a class="insights-rec-card" href="${escHtml(r.url)}" target="_blank" rel="noopener">
+          <div class="insights-rec-num">${i + 1}</div>
+          ${thumb
+            ? `<img class="insights-rec-thumb" src="${escHtml(thumb)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+            : '<div class="insights-rec-thumb-placeholder">💿</div>'}
+          <div class="insights-rec-info">
+            <div class="insights-rec-title">${escHtml(r.title)}</div>
+            <div class="insights-rec-artist">${escHtml(r.artist)}</div>
+            ${tags ? `<div class="insights-rec-tags">${escHtml(tags)}</div>` : ''}
+          </div>
+          ${r.year ? `<div class="insights-rec-year">${r.year}</div>` : ''}
+          <div class="insights-rec-arrow">↗</div>
+        </a>`;
+    }).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div class="insights-empty">Errore nel caricare i consigli. Riprova.</div>';
+    console.warn('[Insights] Discogs recs failed', e);
+  } finally {
+    if (refBtn) refBtn.classList.remove('spinning');
+  }
+}
 
 // ─── INIT ─────────────────────────────────────────────────────────
 async function init() {
