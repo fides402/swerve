@@ -1992,13 +1992,14 @@ const Queue = {
   async refill(forceSeedId = null) {
     if (S.isFetching) return;
     S.isFetching = true;
+    let _needRetry = false;
     try {
       updateSeedInfo(forceSeedId && S.sessionSeedTrack
         ? `Basato su: ${S.sessionSeedTrack.t}`
         : 'Nuove scoperte simili ai tuoi gusti');
 
       const queueNeeds = QUEUE_TARGET - S.queue.length;
-      if (queueNeeds <= 0) return;
+      if (queueNeeds <= 0) { showDiscoverCards(); return; }
 
       const newTracks = [];
 
@@ -2127,7 +2128,8 @@ const Queue = {
       }
 
       if (merged.length === 0) {
-        showDiscoverEmpty();
+        if (S.queue.length > 0) showDiscoverCards();
+        else _needRetry = true;
         return;
       }
 
@@ -2158,6 +2160,7 @@ const Queue = {
       showDiscoverCards();
     } finally {
       S.isFetching = false;
+      if (_needRetry) showDiscoverEmpty(); // isFetching now false → can trigger new refill
     }
   },
 
