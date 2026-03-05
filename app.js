@@ -3151,7 +3151,6 @@ function renderLibrary(filter = S.libraryFilter, search = '') {
         <div class="lib-row-title">${escHtml(track.t)}</div>
         <div class="lib-row-meta">${escHtml(track.a)}${track.y ? ' · ' + track.y : ''}</div>
       </div>
-      ${track._src === 'discovered' ? '<span class="lib-row-badge">NUOVO</span>' : ''}
       <div class="lib-row-actions">
         <button class="lib-row-btn play" data-action="play">▶ Ascolta</button>
         <button class="lib-row-btn sim"  data-action="session">◈ Simili</button>
@@ -3660,6 +3659,9 @@ function initEvents() {
     $('volume-slider').value = e.target.value;
   });
   $('full-like-btn').addEventListener('click', () => toggleLikeCurrentTrack());
+  $('full-album-btn').addEventListener('click', () => {
+    if (S.playerTrack) AlbumMode.open(S.playerTrack);
+  });
   $('full-lyrics-btn').addEventListener('click', () => {
     S.lyricsOpen = !S.lyricsOpen;
     S.queueOpen = false;

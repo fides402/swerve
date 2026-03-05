@@ -537,6 +537,13 @@
       .lib-io-btn { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 50%; }
       .lib-io-label { display: none; }
       .lib-search-full { margin-top: 10px; }
+      /* Library rows on mobile: hide hover actions, show text fully */
+      .lib-row-actions { display: none !important; }
+      .lib-row-btn.addpl { display: none !important; }
+      .lib-row-info { min-width: 0; flex: 1; }
+      .lib-row-title { font-size: 13px; }
+      .lib-row-meta { font-size: 11px; }
+      .lib-row { padding: 6px 12px; gap: 10px; }
     }
 
     /* ── EXPORT BTN (legacy) ── */
@@ -1110,15 +1117,15 @@
       -webkit-appearance: none;
       width: 12px; height: 12px; border-radius: 50%; background: white;
     }
-    .full-queue-btn, .full-lyrics-btn {
+    .full-queue-btn, .full-lyrics-btn, .full-album-btn {
       width: 36px; height: 36px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
       color: var(--text3); background: var(--surface2);
       transition: var(--transition);
     }
-    .full-queue-btn:hover, .full-lyrics-btn:hover { color: var(--text); background: var(--surface3); }
-    .full-queue-btn.active, .full-lyrics-btn.active { color: var(--accent); background: var(--accent-dim); }
-    .full-queue-btn svg, .full-lyrics-btn svg { width: 16px; height: 16px; }
+    .full-queue-btn:hover, .full-lyrics-btn:hover, .full-album-btn:hover { color: var(--text); background: var(--surface3); }
+    .full-queue-btn.active, .full-lyrics-btn.active, .full-album-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .full-queue-btn svg, .full-lyrics-btn svg, .full-album-btn svg { width: 16px; height: 16px; }
 
     /* Lyrics panel */
     #lyrics-panel {
@@ -1690,6 +1697,9 @@
           </svg>
         </div>
         <div style="display:flex;gap:8px">
+          <button class="full-album-btn" id="full-album-btn" title="Visualizza album">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
           <button class="full-lyrics-btn" id="full-lyrics-btn" title="Testi">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="21" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="14" x2="3" y2="14"/><line x1="15" y1="18" x2="3" y2="18"/></svg>
           </button>
