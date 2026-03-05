@@ -229,6 +229,8 @@ const S = {
   taste: {
     artists: {},   // name → {liked:0, skipped:0}
     decades: {},   // decade → {liked:0, skipped:0}
+    genres: {},    // genre → {liked:0}  (from Discogs master lookup)
+    styles: {},    // style → {liked:0}  (from Discogs master lookup)
     seeds: [],     // [{id:tidalId, weight, title}]
     total: 0
   },
@@ -385,6 +387,8 @@ function loadState() {
     S.mySkipped = new Set(d.mySkipped || []);
     S.playlists = d.playlists || [];
     S.taste = d.taste || S.taste;
+    S.taste.genres = S.taste.genres || {};   // migration: ensure new fields exist
+    S.taste.styles = S.taste.styles || {};
     S.tidalCache = d.tidalCache || {};
     S.presetSeedCache = d.presetSeedCache || {};
     S.discogsWeights = d.discogsWeights || {};
@@ -953,6 +957,27 @@ const DiscogsEngine = {
   },
 
   // ── Daily recommendations ──────────────────────────────────────
+  // Look up the Discogs master release for an artist+title.
+  // Returns { year, genres, styles } of the earliest known press, or null.
+  _masterCache: {},
+  async _lookupMasterYear(artist, title) {
+    const key = `${(artist || '').toLowerCase()}|${(title || '').toLowerCase()}`.slice(0, 100);
+    if (key in this._masterCache) return this._masterCache[key];
+    try {
+      await sleep(400);
+      const qs = new URLSearchParams({ artist, title: title || '', type: 'master', per_page: '5' });
+      const resp = await discogsFetch(`${DISCOGS_BASE}/database/search?${qs}`);
+      const data  = await resp.json();
+      const results = (data.results || []).filter(r => r.year);
+      if (!results.length) { this._masterCache[key] = null; return null; }
+      // Pick the result with the EARLIEST year (= original press)
+      const best = results.reduce((a, b) => parseInt(a.year) <= parseInt(b.year) ? a : b);
+      const out = { year: parseInt(best.year), genres: best.genre || [], styles: best.style || [] };
+      this._masterCache[key] = out;
+      return out;
+    } catch { this._masterCache[key] = null; return null; }
+  },
+
   // Build a set of artist+album keys already in library (for deduplication).
   _buildLibSet() {
     const discovered = S.myLiked.filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid));
@@ -962,7 +987,7 @@ const DiscogsEngine = {
   },
 
   // Score a Discogs result against the user's taste profile.
-  _scoreRec(result, topArtistSet, topDecadeSet) {
+  _scoreRec(result, topArtistSet, topDecadeSet, topGenreSet, topStyleSet) {
     let s = 0;
     const artist = (result.artist || '').toLowerCase();
     if (topArtistSet.has(artist)) s += 4;
@@ -972,6 +997,11 @@ const DiscogsEngine = {
     const fmts = (result.formats || []).map(f => f.toLowerCase());
     if (fmts.some(f => /\blp\b|album/i.test(f))) s += 1;
     if (fmts.some(f => /compil|various/i.test(f))) s -= 2;
+    // Genre / style affinity (styles are more specific → higher weight)
+    if (topGenreSet) for (const g of (result.genres || []))
+      if (topGenreSet.has(g.toLowerCase())) s += 1;
+    if (topStyleSet) for (const st of (result.styles || []))
+      if (topStyleSet.has(st.toLowerCase())) s += 2;
     return s;
   },
 
@@ -1002,6 +1032,16 @@ const DiscogsEngine = {
         .filter(x => x.score > 0).sort((a, b) => b.score - a.score)
         .slice(0, 3).map(x => x.d)
     );
+    const topGenreSet = new Set(
+      Object.entries(S.taste.genres || {})
+        .sort((a, b) => (b[1].liked || 0) - (a[1].liked || 0))
+        .slice(0, 6).map(([g]) => g.toLowerCase())
+    );
+    const topStyleSet = new Set(
+      Object.entries(S.taste.styles || {})
+        .sort((a, b) => (b[1].liked || 0) - (a[1].liked || 0))
+        .slice(0, 10).map(([s]) => s.toLowerCase())
+    );
 
     const libSet     = this._buildLibSet();
     const allResults = [];
@@ -1029,8 +1069,9 @@ const DiscogsEngine = {
             thumb: r.cover_image || r.thumb || '',
             genres: r.genre || [], styles: r.style || [], formats: r.format || [],
             _score: this._scoreRec(
-              { artist: albumArtist, year: r.year, formats: r.format || [] },
-              topArtistSet, topDecadeSet
+              { artist: albumArtist, year: r.year, formats: r.format || [],
+                genres: r.genre || [], styles: r.style || [] },
+              topArtistSet, topDecadeSet, topGenreSet, topStyleSet
             ),
           });
         }
@@ -1992,6 +2033,39 @@ const Taste = {
     }
     S.taste.total++;
     saveState();
+
+    // Background: look up original press year + genres/styles via Discogs master
+    // (corrects decade if track.y is a remaster date, records genre/style affinity)
+    setTimeout(async () => {
+      try {
+        const master = await DiscogsEngine._lookupMasterYear(track.a, track.al || track.t);
+        if (!master) return;
+        const currentDecade  = Math.floor(parseInt(track.y || 2000) / 10) * 10;
+        const originalDecade = Math.floor(master.year / 10) * 10;
+        if (originalDecade !== currentDecade) {
+          // Move the like to the correct decade
+          if ((S.taste.decades[currentDecade]?.liked || 0) > 0)
+            S.taste.decades[currentDecade].liked--;
+          S.taste.decades[originalDecade] = S.taste.decades[originalDecade] || { liked: 0, skipped: 0 };
+          S.taste.decades[originalDecade].liked++;
+        }
+        // Store original year on the track in myLiked for future reference
+        const likedTrack = S.myLiked.find(t =>
+          (track.tidalId && t.tidalId === track.tidalId) || (t.t === track.t && t.a === track.a)
+        );
+        if (likedTrack) likedTrack._originalYear = String(master.year);
+        // Record genre/style affinity
+        for (const g of master.genres) {
+          S.taste.genres[g] = S.taste.genres[g] || { liked: 0 };
+          S.taste.genres[g].liked++;
+        }
+        for (const st of master.styles) {
+          S.taste.styles[st] = S.taste.styles[st] || { liked: 0 };
+          S.taste.styles[st].liked++;
+        }
+        saveState();
+      } catch(_) {}
+    }, 200);
   },
 
   recordSkip(track) {
@@ -4169,6 +4243,29 @@ function renderInsights() {
       decChart.innerHTML = entries.map(e => `
         <div class="insights-bar-row">
           <div class="insights-bar-label">${e.d}s</div>
+          <div class="insights-bar-track">
+            <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
+          </div>
+          <div class="insights-bar-count">${e.liked}</div>
+        </div>`).join('');
+    }
+  }
+
+  // ── Styles chart (top 10 Discogs styles from liked tracks) ──
+  const styleChart = $('insights-styles-chart');
+  if (styleChart) {
+    const entries = Object.entries(S.taste.styles || {})
+      .map(([s, v]) => ({ s, liked: v.liked || 0 }))
+      .filter(e => e.liked > 0)
+      .sort((a, b) => b.liked - a.liked)
+      .slice(0, 10);
+    if (entries.length === 0) {
+      styleChart.innerHTML = '<div class="insights-empty">Verrà popolato man mano che scopri brani.</div>';
+    } else {
+      const max = entries[0].liked;
+      styleChart.innerHTML = entries.map(e => `
+        <div class="insights-bar-row">
+          <div class="insights-bar-label" title="${escHtml(e.s)}">${escHtml(e.s)}</div>
           <div class="insights-bar-track">
             <div class="insights-bar-fill" style="width:${Math.round((e.liked / max) * 100)}%"></div>
           </div>
