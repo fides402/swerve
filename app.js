@@ -3139,7 +3139,8 @@ function renderLibrary(filter = S.libraryFilter, search = '') {
   const catalogTracks = CATALOG.map(t => ({ ...t, _source: 'catalog' }));
   const discoveredTracks = S.myLiked
     .filter(t => !t.sid || !CATALOG.some(c => c.sid === t.sid))
-    .map(t => ({ ...t, _source: 'discovered' }));
+    .map(t => ({ ...t, _source: 'discovered' }))
+    .sort((a, b) => (b.likedAt || 0) - (a.likedAt || 0));
 
   let all = filter === 'catalog' ? catalogTracks
     : filter === 'discovered' ? discoveredTracks
