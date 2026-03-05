@@ -2203,6 +2203,29 @@ const Queue = {
 
 // ─── AUDIO PLAYER ─────────────────────────────────────────────────
 const Player = {
+  _streamCache: {},   // tidalId → { url, ts } — pre-fetched stream URLs
+  _prefetching: new Set(), // tidalIds currently being pre-fetched
+
+  // Pre-fetch and cache the stream URL for a track so background transitions are instant.
+  async _prefetch(track) {
+    if (!track?.tidalId) return;
+    const id = track.tidalId;
+    if (this._prefetching.has(id)) return;
+    const cached = this._streamCache[id];
+    if (cached && Date.now() - cached.ts < 55_000) return; // URLs valid ~60s
+    this._prefetching.add(id);
+    try {
+      const q = S.streamQuality || 'HIGH';
+      let url = await API.getStreamUrl(id, q);
+      if (!url && q === 'LOSSLESS') url = await API.getStreamUrl(id, 'HIGH');
+      if (!url) url = await API.getStreamUrl(id, 'LOW');
+      if (url) this._streamCache[id] = { url, ts: Date.now() };
+    } catch (_) {
+    } finally {
+      this._prefetching.delete(id);
+    }
+  },
+
   init() {
     const a = S.audio;
     a.volume = S.volume;
@@ -2225,13 +2248,19 @@ const Player = {
 
     let url = null;
 
-    // Try Tidal stream at preferred quality, fall back down the chain
+    // Try Tidal stream — use pre-fetched cache if available (enables seamless background playback)
     if (track.tidalId) {
-      const q = S.streamQuality || 'HIGH';
-      url = await API.getStreamUrl(track.tidalId, q);
-      // Fallback chain: LOSSLESS → HIGH → LOW
-      if (!url && q === 'LOSSLESS') url = await API.getStreamUrl(track.tidalId, 'HIGH');
-      if (!url) url = await API.getStreamUrl(track.tidalId, 'LOW');
+      const cached = this._streamCache[track.tidalId];
+      if (cached && Date.now() - cached.ts < 55_000) {
+        url = cached.url;
+        delete this._streamCache[track.tidalId]; // consume
+      } else {
+        const q = S.streamQuality || 'HIGH';
+        url = await API.getStreamUrl(track.tidalId, q);
+        // Fallback chain: LOSSLESS → HIGH → LOW
+        if (!url && q === 'LOSSLESS') url = await API.getStreamUrl(track.tidalId, 'HIGH');
+        if (!url) url = await API.getStreamUrl(track.tidalId, 'LOW');
+      }
     }
 
     // Fallback to Spotify preview
@@ -2351,6 +2380,11 @@ const Player = {
     const ratio = dur ? cur / dur : 0;
     updateProgressUI(ratio, cur, dur);
     updateCardProgress(ratio);
+    // Pre-fetch next track's stream URL so background track transitions are instant
+    if (dur > 0 && dur - cur <= 30) {
+      const nextIdx = this._nextIdx();
+      if (nextIdx !== null) this._prefetch(S.playerQueue[nextIdx]);
+    }
   },
 
   _onEnded() {
