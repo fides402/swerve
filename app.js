@@ -4224,7 +4224,8 @@ const AlbumMode = {
     document.body.style.overflow = 'hidden';
 
     try {
-      const resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`);
+      const resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const d = await resp.json();
       const data = d.data;
       if (!data) throw new Error('no data');
@@ -4233,7 +4234,8 @@ const AlbumMode = {
       const albumTitle = data.title || track.al || '';
       const artist = data.artist?.name || track.a || '';
       const year = (data.releaseDate || '').slice(0, 4);
-      const items = data.items || [];
+      // Tidal wraps tracks under data.items OR data.tracks.items depending on endpoint version
+      const items = data.items || data.tracks?.items || [];
 
       overlay.innerHTML = `
         <div class="album-modal">
@@ -4338,6 +4340,7 @@ const AlbumMode = {
       });
 
     } catch(e) {
+      console.warn('[AlbumMode] load failed', albumId, e?.message || e);
       overlay.innerHTML = `<div class="album-loading">Errore nel caricare l'album.</div>
         <button class="album-back" id="album-back-btn" style="position:fixed;top:16px;left:16px">← Indietro</button>`;
       $('album-back-btn').addEventListener('click', () => this.close());
