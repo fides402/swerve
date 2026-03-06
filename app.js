@@ -2271,6 +2271,7 @@ const Queue = {
 
   async refill(forceSeedId = null) {
     if (S.isFetching) return;
+    if (AlbumMode._loading) return; // don't flood API while album is being fetched
     S.isFetching = true;
     let _needRetry = false;
     try {
@@ -4214,6 +4215,7 @@ function toggleLikeCurrentTrack() {
 // ─── ALBUM MODE ───────────────────────────────────────────────────
 const AlbumMode = {
   _currentAlbumId: null,
+  _loading: false,          // true while an album fetch is in flight — pauses background refill
 
   async open(track) {
     if (!track) return;
@@ -4226,11 +4228,14 @@ const AlbumMode = {
     overlay.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
 
+    this._loading = true;
     try {
+      // Retry up to 3 times on 429 with progressive back-off (3 s / 6 s / 10 s)
+      const backoffs = [3000, 6000, 10000];
       let resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
-      // Retry once on 429 (rate-limit) after a short back-off
-      if (resp.status === 429) {
-        await new Promise(r => setTimeout(r, 2500));
+      for (const delay of backoffs) {
+        if (resp.status !== 429) break;
+        await new Promise(r => setTimeout(r, delay));
         resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
       }
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -4352,6 +4357,8 @@ const AlbumMode = {
       overlay.innerHTML = `<div class="album-loading">Errore nel caricare l'album.</div>
         <button class="album-back" id="album-back-btn" style="position:fixed;top:16px;left:16px">← Indietro</button>`;
       $('album-back-btn').addEventListener('click', () => this.close());
+    } finally {
+      this._loading = false;
     }
   },
 
@@ -4359,6 +4366,7 @@ const AlbumMode = {
     $('album-overlay').classList.add('hidden');
     document.body.style.overflow = '';
     this._currentAlbumId = null;
+    this._loading = false;
   }
 };
 
@@ -4529,7 +4537,8 @@ async function init() {
   // Periodic background top-up: keep the queue full even when the user isn't swiping
   // (e.g. listening to a track in Player mode). Runs every 45 seconds.
   setInterval(() => {
-    if (!S.isFetching && S.queue.length < QUEUE_TARGET) Queue.refill();
+    // Skip if an album is loading — avoid 429 on the album endpoint
+    if (!S.isFetching && !AlbumMode._loading && S.queue.length < QUEUE_TARGET) Queue.refill();
   }, 45000);
   updateSettingsBadges();
   // Restore settings form values for connected services
