@@ -10,10 +10,10 @@ const API_BASE = 'https://api.monochrome.tf';
 const TIDAL_IMG = 'https://resources.tidal.com/images';
 const DISCOGS_BASE = 'https://api.discogs.com';
 const DISCOGS_TOKEN = 'fvYYQHvhAEHVshXGPHYtbAWSlTUNQpnNJcBBbYCB';
-const QUEUE_REFILL_AT = 20;
-const QUEUE_TARGET = 60;
+const QUEUE_REFILL_AT = 30;  // start refilling earlier so buffer is always ready
+const QUEUE_TARGET = 80;    // keep a deeper buffer so the rullino never runs dry
 const API_TIMEOUT = 9000;
-const RARE_POP_MAX = 40;  // filter out mainstream hits (pop > this)
+const RARE_POP_MAX = 70;  // filter out mainstream hits (pop > this) — raised to allow jazz/soul classics
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
 const LASTFM_KEY = 'acd1fbf80c19d2febdf1bf378293eedf';
 const LASTFM_SECRET = 'acd1fbf80c19d2febdf1bf378293eedf';
@@ -614,8 +614,8 @@ const MBEngine = {
 // Accept if ≥ 40% of the expected title's content words appear in the found title.
 function _tidalMatchOk(expArtist, expTitle, found) {
   if (!found?.id) return false;
-  const norm = s => (s || '').toLowerCase().replace(/[^ws]/g, ' ').trim();
-  const tok = s => norm(s).split(/s+/).filter(w => w.length > 2);
+  const norm = s => (s || '').toLowerCase().replace(/[^\w\s]/g, ' ').trim();
+  const tok = s => norm(s).split(/\s+/).filter(w => w.length > 2);
   const expT = tok(expTitle);
   const foundT = new Set(tok(found.title || ''));
   if (!expT.length) return true; // single-word title, can't reject
@@ -656,6 +656,11 @@ function markSeen(t) {
   if (t.tidalId) S.seenIds.add(`t:${t.tidalId}`);
   if (t.sid) S.seenIds.add(`s:${t.sid}`);
   if (t.isrc) S.seenIds.add(`i:${t.isrc}`);
+  // Rolling window: prevent in-memory growth that slows refill over a long session
+  if (S.seenIds.size > 900) {
+    const arr = [...S.seenIds];
+    S.seenIds = new Set(arr.slice(200)); // drop oldest 200, keep last 700
+  }
 }
 
 function isLiked(t) {
@@ -1250,11 +1255,12 @@ const SimilarArtistEngine = {
 
     let added = 0;
     const tracks = [];
-    const pool = [...simSet].sort(() => Math.random() - 0.5);
+    // Cap the artist pool to 14 to avoid runaway Discogs call chains
+    const pool = [...simSet].sort(() => Math.random() - 0.5).slice(0, 14);
 
     for (const artist of pool) {
       if (added >= maxAdd) break;
-      await sleep(400);
+      await sleep(200);
       try {
         const qs = new URLSearchParams({
           type: 'release', artist,
@@ -1271,7 +1277,7 @@ const SimilarArtistEngine = {
 
         for (const rel of valid) {
           if (added >= maxAdd) break;
-          await sleep(400);
+          await sleep(150);
           try {
             const dr = await discogsFetch(`${DISCOGS_BASE}/releases/${rel.id}`);
             if (!dr.ok) continue;
@@ -1849,7 +1855,7 @@ const GroqEngine = {
                 uncached.map((t, i) => `${i + 1}. ${t}`).join('\n'),
             }],
             temperature: 0.1,
-            max_tokens: 1024,
+            max_tokens: 2048,
             response_format: { type: 'json_object' },
           }),
         }).finally(() => clearTimeout(tid));
@@ -2211,8 +2217,18 @@ const GeminiEngine = {
   async getClusterArtists(seedTrack) {
     if (!seedTrack || !seedTrack.t || !seedTrack.a) return [];
 
-    const prompt = `Based on the track '${seedTrack.t}' by '${seedTrack.a}', suggest exactly 5 different, rare, and highly affine artists that have a very similar vibe (e.g., obscure soul, rare groove, spiritual jazz, or whatever genre this belongs to).
-Do not suggest mainstream artists.
+    // Build taste context from user's top liked styles
+    const topStyles = Object.entries(S.taste.styles || {})
+      .filter(([, v]) => v.liked > 0)
+      .sort((a, b) => b[1].liked - a[1].liked)
+      .slice(0, 6)
+      .map(([s]) => s);
+    const styleCtx = topStyles.length
+      ? `\nThe user's taste profile is: ${topStyles.join(', ')}. Only suggest artists that fit within these styles — do NOT suggest hip-hop, electronic dance, house, techno, or any genre not listed here.`
+      : '';
+
+    const prompt = `Based on the track '${seedTrack.t}' by '${seedTrack.a}', suggest exactly 5 different, rare, and highly affine artists that have a very similar vibe.
+Do not suggest mainstream artists.${styleCtx}
 Format the output EXACTLY as a JSON array of strings containing ONLY the artist names.
 Example:
 [
@@ -2251,6 +2267,8 @@ Output ONLY valid JSON, without any markdown formatting or introductory text.`;
 
 // ─── RECOMMENDATION QUEUE MANAGER ────────────────────────────────
 const Queue = {
+  _failCount: 0, // consecutive empty refills — stops infinite loop after 3
+
   async refill(forceSeedId = null) {
     if (S.isFetching) return;
     S.isFetching = true;
@@ -2263,166 +2281,197 @@ const Queue = {
       const queueNeeds = QUEUE_TARGET - S.queue.length;
       if (queueNeeds <= 0) { showDiscoverCards(); return; }
 
-      const newTracks = [];
+      // Push a Tidal item into results if it passes all filters
+      const tryPush = (item, results, src) => {
+        const t = fromTidal(item);
+        if (!t.tidalId) return;
+        if (hasSeen(t) || isLiked(t) || Taste.shouldFilter(t)) return;
+        if (t.pop > RARE_POP_MAX) return;
+        t._src = src;
+        results.push(t);
+      };
 
-      // 1. Sample random video titles from the channel
-      // 2. Groq extracts artist + track title
-      // 3. Find track on Monochrome (or any track by that artist as fallback)
-      // 4. Fan out: LFM track.getSimilar + Spotify /recommendations seed_tracks
-      let ytParsed = [];
+      const allTracks = [];
+
+      // ── PATH A: YouTube videos → dual sub-path (Tidal recs + LFM), in parallel ─
       if (!forceSeedId && YT_CHANNELS.some(h => (S.ytChannelData[h]?.videos || []).length >= 3)) {
         try {
-          updateLoadingStep('Analisi video YouTube…', '');
-          const sample = YouTubeEngine.getSample(12);
-          ytParsed = await GroqEngine.parseTitles(sample.map(v => v.title));
+          updateLoadingStep('Scelgo video dai canali…', '');
 
-          const validSeeds = ytParsed.filter(p => p.artist).slice(0, 4);
-          if (validSeeds.length === 0) throw new Error('No valid seeds from Groq');
+          // 6 videos from each loaded channel for variety
+          const allSamples = [];
+          for (const handle of YT_CHANNELS) {
+            const vids = S.ytChannelData[handle]?.videos || [];
+            if (vids.length < 3) continue;
+            const picked = new Set();
+            let att = 0;
+            while (picked.size < 6 && att++ < 60) picked.add(Math.floor(Math.random() * vids.length));
+            [...picked].forEach(i => allSamples.push(vids[i]));
+          }
+          if (!allSamples.length) throw new Error('no YT videos');
 
-          // STEP 1: Gemini similar artists (single best seed)
-          updateLoadingStep('Cerco artisti simili a ' + validSeeds[0].artist + '…', 'Gemini AI');
-          let similarPool = [];
-          try {
-            const { artist, track } = validSeeds[0];
-            const geminiArtists = await GeminiEngine.getClusterArtists({ t: track || artist, a: artist });
-            similarPool = geminiArtists || [];
-          } catch {}
+          updateLoadingStep('Identifico brani dai titoli…', 'Groq AI');
+          const parsed = await GroqEngine.parseTitles(allSamples.map(v => v.title));
+          const seeds = parsed.filter(p => p.artist && p.track).slice(0, 10);
+          if (!seeds.length) throw new Error('no seeds');
 
-          const seedArtists = new Set(validSeeds.map(p => p.artist.toLowerCase()));
-          similarPool = [...new Set(similarPool)].filter(a => !seedArtists.has(a.toLowerCase()));
+          updateLoadingStep('Espando con Tidal + Last.fm in parallelo…', '');
 
-          // Enrich/fallback with LFM artist.getSimilar
-          if (similarPool.length < 6) {
-            updateLoadingStep('Espando rete artisti…', 'Last.fm');
-            const lfmLists = await Promise.all(
-              validSeeds.slice(0, 3).map(async ({ artist }) => {
-                try {
-                  const qs = new URLSearchParams({
-                    method: 'artist.getSimilar', artist,
-                    api_key: LASTFM_KEY, format: 'json', limit: '12', autocorrect: '1',
-                  });
-                  const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
-                  if (!r.ok) return [];
-                  const d = await r.json();
-                  return (d.similarartists?.artist || []).slice(0, 10).map(a => a.name);
-                } catch { return []; }
-              })
-            );
-            const lfmPool = [...new Set(lfmLists.flat())].filter(a => !seedArtists.has(a.toLowerCase()));
-            similarPool = [...new Set([...similarPool, ...lfmPool])];
+          // Both sub-paths run concurrently — whichever finds tracks contributes
+          const [a1, a2] = await Promise.all([
+
+            // Sub-path A1: Tidal search → getRecommendations (Tidal-native)
+            (async () => {
+              const res = [];
+              const found = (await Promise.all(
+                seeds.map(async ({ artist, track }) => {
+                  try {
+                    const f = await API.search(`${track} ${artist}`, null);
+                    return _tidalMatchOk(artist, track, f) ? f : null;
+                  } catch { return null; }
+                })
+              )).filter(Boolean);
+              if (found.length) {
+                const recs = await Promise.all(found.map(f => API.getRecommendations(f.id).catch(() => [])));
+                for (const item of [...found, ...recs.flat()]) tryPush(item, res, 'yt_rec');
+              }
+              return res;
+            })(),
+
+            // Sub-path A2: LFM track.getSimilar (primary) + artist.getSimilar→getTopTracks (secondary)
+            // Both LFM flows run in parallel, then Tidal searches with 4s cap for speed
+            (async () => {
+              const res = [];
+
+              // Run primary + secondary LFM flows in parallel
+              const [trackSimLists, artistTopTracks] = await Promise.all([
+
+                // Primary: track.getSimilar gives direct artist+title pairs (most targeted)
+                Promise.all(seeds.map(async ({ artist, track }) => {
+                  try {
+                    const qs = new URLSearchParams({ method: 'track.getSimilar', artist, track, api_key: LASTFM_KEY, format: 'json', limit: '15', autocorrect: '1' });
+                    const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+                    const d = await r.json();
+                    return (d.similartracks?.track || []).slice(0, 12).map(t => ({ artist: t.artist?.name || '', name: t.name }));
+                  } catch { return []; }
+                })),
+
+                // Secondary: artist.getSimilar → getTopTracks for extra variety
+                (async () => {
+                  const al = await Promise.all(seeds.slice(0, 7).map(async ({ artist }) => {
+                    try {
+                      const qs = new URLSearchParams({ method: 'artist.getSimilar', artist, api_key: LASTFM_KEY, format: 'json', limit: '6', autocorrect: '1' });
+                      const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+                      const d = await r.json();
+                      return (d.similarartists?.artist || []).slice(0, 5).map(a => a.name);
+                    } catch { return []; }
+                  }));
+                  const simArtists = [...new Set(al.flat())].sort(() => Math.random() - 0.5).slice(0, 14);
+                  const tl = await Promise.all(simArtists.map(async artist => {
+                    try {
+                      const qs = new URLSearchParams({ method: 'artist.getTopTracks', artist, api_key: LASTFM_KEY, format: 'json', limit: '4', autocorrect: '1' });
+                      const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+                      const d = await r.json();
+                      return (d.toptracks?.track || []).slice(0, 3).map(t => ({ artist, name: t.name }));
+                    } catch { return []; }
+                  }));
+                  return tl.flat();
+                })(),
+              ]);
+
+              // Combine, deduplicate, shuffle — cap at 64 for manageable search volume
+              const seenC = new Set();
+              const candidates = [...trackSimLists.flat(), ...artistTopTracks]
+                .filter(c => { const k = `${c.artist}|${c.name}`.toLowerCase(); return seenC.has(k) ? false : (seenC.add(k), true); })
+                .sort(() => Math.random() - 0.5)
+                .slice(0, 64);
+
+              updateLoadingStep('Cerco su Tidal…', `${candidates.length} candidati LFM`);
+
+              // Tidal search with 4s cap per query, batches of 20 for throughput
+              const fastSearch = q => Promise.race([
+                API.search(q, null),
+                new Promise(r => setTimeout(() => r(null), 4000)),
+              ]);
+              for (let i = 0; i < candidates.length && res.length < 30; i += 20) {
+                await Promise.all(candidates.slice(i, i + 20).map(async ({ artist, name }) => {
+                  if (res.length >= 30) return;
+                  const f = await fastSearch(`${name} ${artist}`);
+                  if (f && _tidalMatchOk(artist, name, f)) tryPush(f, res, 'yt_lfm');
+                }));
+              }
+              return res;
+            })(),
+          ]);
+
+          // Merge A1 + A2, deduplicate by tidalId
+          const seenA = new Set();
+          for (const t of [...a1, ...a2]) {
+            if (t.tidalId && !seenA.has(t.tidalId)) { seenA.add(t.tidalId); allTracks.push(t); }
           }
 
-          // STEP 2: LFM artist.getTopTracks for similar artists (parallel)
-          updateLoadingStep(similarPool.length + ' artisti trovati – recupero brani…', 'Last.fm');
-          const topTracksPerArtist = await Promise.all(
-            similarPool.slice(0, 12).map(async artist => {
-              try {
-                const qs = new URLSearchParams({
-                  method: 'artist.getTopTracks', artist,
-                  api_key: LASTFM_KEY, format: 'json', limit: '3', autocorrect: '1',
-                });
-                const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
-                if (!r.ok) return [];
-                const d = await r.json();
-                return (d.toptracks?.track || []).slice(0, 2).map(t => ({ artist, name: t.name }));
-              } catch { return []; }
-            })
+          updateLoadingStep(`${allTracks.length} brani trovati dal pool YT…`, '');
+        } catch (e) { console.warn('[YT path]', e); }
+      }
+
+      // ── PATH B: Liked tracks → Tidal recommendations ──────────────────────────
+      if (S.myLiked.length > 0) {
+        try {
+          const seedArr = (() => {
+            if (forceSeedId && S.sessionSeedTrack) return [S.sessionSeedTrack];
+            const picks = randPick(S.myLiked, 4);
+            return Array.isArray(picks) ? picks : [picks];
+          })();
+          updateSeedInfo(`Mix da: ${seedArr[0]?.t} – ${seedArr[0]?.a}…`);
+          const likedRecs = await Promise.all(
+            seedArr.filter(s => s.tidalId).map(s => API.getRecommendations(s.tidalId).catch(() => []))
           );
-          const candidateTracks = topTracksPerArtist.flat();
-
-          // STEP 3: Tidal searches in parallel batches of 8
-          const artistInBatch = new Set();
-          for (let i = 0; i < candidateTracks.length; i += 8) {
-            await Promise.all(candidateTracks.slice(i, i + 8).map(async ({ artist, name }) => {
-              if (artistInBatch.has(artist.toLowerCase())) return;
-              try {
-                const f = await API.search(`${name} ${artist}`, null);
-                if (!_tidalMatchOk(artist, name, f)) return;
-                const t = fromTidal(f);
-                if (hasSeen(t) || Taste.shouldFilter(t) || isLiked(t)) return;
-                if (t.pop > RARE_POP_MAX) return;
-                if (!_passesGenreFilter(t)) return;
-                artistInBatch.add(artist.toLowerCase());
-                t._src = 'yt_lfm';
-                newTracks.push(t);
-              } catch {}
-            }));
-            const total = newTracks.length + S.queue.length;
-            updateLoadingStep(
-              total + ' bran' + (total === 1 ? 'o' : 'i') + ' trovat' + (total === 1 ? 'o' : 'i') + '…',
-              'controllo ' + Math.min(i + 8, candidateTracks.length) + '/' + candidateTracks.length
-            );
-            // Show first card as soon as 1 track is ready
-            if (newTracks.length >= 1 && S.queue.length === 0) {
-              S.queue.push(...newTracks.splice(0));
-              updateQueueCounter();
-              showDiscoverCards();
-            }
-          }
-        } catch(e) { console.warn('[YT path]', e); }
+          for (const item of likedRecs.flat()) tryPush(item, allTracks, 'liked_rec');
+        } catch (e) { console.warn('[liked path]', e); }
       }
 
-      // ── Gemini cluster path (runs when user has liked tracks) ──────────────
-      let merged = [...newTracks]; // seed with YT discoveries
-
-      const pool = S.myLiked;
-      if (pool.length > 0) {
-        const seedTrack = randPick(pool, 1);
-        const forceSeedName = (forceSeedId && S.sessionSeedTrack) ? S.sessionSeedTrack : seedTrack;
-        let forceSeedTrack = Array.isArray(forceSeedName) ? forceSeedName[0] : forceSeedName;
-
-        if (forceSeedTrack) {
-          updateSeedInfo(`Analizzando cluster a partire da: ${forceSeedTrack.t} - ${forceSeedTrack.a}...`);
-
-          const baseArtists = await GeminiEngine.getClusterArtists(forceSeedTrack);
-
-          if (baseArtists && baseArtists.length > 0) {
-            updateSeedInfo(`Espansione grappolo Last.fm in corso...`);
-            const clusterTracks = await SimilarArtistEngine.buildClusterQueue(baseArtists, queueNeeds);
-
-            // Strict Catalog Filter: exclude any track in the spreadsheet
-            const filtered = clusterTracks.filter(ct =>
-              !CATALOG.some(c => c.t.toLowerCase().trim() === ct.t.toLowerCase().trim() && c.a.toLowerCase().trim() === ct.a.toLowerCase().trim())
-            );
-            merged = [...merged, ...filtered];
-          }
-        }
-      }
-
+      const merged = [...allTracks];
       if (merged.length === 0) {
-        if (S.queue.length > 0) showDiscoverCards();
-        else _needRetry = true;
+        Queue._failCount++;
+        if (S.queue.length > 0) { showDiscoverCards(); Queue._failCount = 0; }
+        else if (Queue._failCount < 3) { _needRetry = true; }
+        else {
+          // After 3 failures: give up, hide spinner, let user retry manually
+          $('discover-loading').style.display = 'none';
+          toast('Nessun brano trovato — riprova con il pulsante 🔄', 'skip');
+        }
         return;
       }
+      Queue._failCount = 0;
 
-      // Feature extraction (MusicBrainz / Gemini styles)
+      // Deduplicate against queue AND within merged itself
+      const inQueue = new Set(S.queue.map(t => t.tidalId).filter(Boolean));
+      const seenM = new Set();
+      const unique = merged.filter(t => {
+        if (!t.tidalId || inQueue.has(t.tidalId)) return false;
+        if (seenM.has(t.tidalId)) return false;
+        seenM.add(t.tidalId);
+        return true;
+      });
+
+      // Score + MMR rerank for diversity
       const recentVecsG = S.queue.slice(0, 5).map(t => FeatureVec.build(t));
-      const scored = merged.map(t => ({
-        t,
-        sc: Scorer.score(t, { recentVecs: recentVecsG })
-      }));
-
-      // Sort by score
+      const scored = unique.map(t => ({ t, sc: Scorer.score(t, { recentVecs: recentVecsG }) }));
       scored.sort((a, b) => (b.sc.total - a.sc.total) + (Math.random() - 0.5) * 0.05);
-
-      // Take top 30 candidates to re-rank for diversity
-      const topCandidates = scored.slice(0, 30);
-      const reranked = mmrRerank(topCandidates, Math.min(15, queueNeeds));
+      const reranked = mmrRerank(scored.slice(0, 80), Math.min(40, queueNeeds));
       const finalTracks = reranked.map(r => r.t);
 
-      // Record artist cooldown so we don't spam the same artist
       for (const t of finalTracks) {
         const ak2 = (t.a || '').toLowerCase().trim();
         if (ak2) S.artistCooldown[ak2] = Date.now();
       }
 
-      // Add to queue
       S.queue.push(...finalTracks);
       updateQueueCounter();
       showDiscoverCards();
     } finally {
       S.isFetching = false;
-      if (_needRetry) showDiscoverEmpty(); // isFetching now false → can trigger new refill
+      if (_needRetry) showDiscoverEmpty();
     }
   },
 
@@ -2832,16 +2881,18 @@ function showDiscoverCards() {
 }
 
 function showDiscoverEmpty() {
-  // Never show the empty screen — forget older seen tracks and auto-refill
+  // Never show the empty screen — always attempt a refill automatically
   if (!S.isFetching) {
-    // Drop the oldest 80% of seenIds so tracks can resurface
+    // Drop 90% of seenIds so more of the catalogue resurfaces (was 80%)
+    // Do NOT reset _failCount here — that would re-enable infinite retry loops.
+    // _failCount is only reset by the manual reload button or when tracks are found.
     const arr = [...S.seenIds];
-    S.seenIds = new Set(arr.slice(Math.floor(arr.length * 0.8)));
+    S.seenIds = new Set(arr.slice(Math.floor(arr.length * 0.9)));
     showDiscoverLoading();
     Queue.refill();
     return;
   }
-  // Still fetching: just show loading
+  // Already fetching — just show the loading indicator and let it finish
   showDiscoverLoading();
 }
 
@@ -3907,6 +3958,10 @@ function initEvents() {
     if (S.currentCardTrack) AlbumMode.open(S.currentCardTrack);
   });
   $('btn-reload-queue').addEventListener('click', async () => {
+    // Manual reload: give a full fresh start — reset failure counter and free up seenIds
+    Queue._failCount = 0;
+    const arr = [...S.seenIds];
+    S.seenIds = new Set(arr.slice(Math.floor(arr.length * 0.5))); // drop 50%
     showDiscoverLoading();
     await Queue.refill();
   });
@@ -4436,6 +4491,12 @@ async function init() {
   setTimeout(() => MBEngine.enrichBg(), 12000);
   setTimeout(() => SpotifyEngine.buildProfile(), 20000);
   if (S.lbUser) { setTimeout(() => LBEngine.loadRecs(), 8000); }
+
+  // Periodic background top-up: keep the queue full even when the user isn't swiping
+  // (e.g. listening to a track in Player mode). Runs every 45 seconds.
+  setInterval(() => {
+    if (!S.isFetching && S.queue.length < QUEUE_TARGET) Queue.refill();
+  }, 45000);
   updateSettingsBadges();
   // Restore settings form values for connected services
   if (S.lbUser) { const el = $('lb-username'); if (el) el.value = S.lbUser; }
