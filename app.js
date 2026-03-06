@@ -4219,18 +4219,33 @@ const AlbumMode = {
 
   async open(track) {
     if (!track) return;
-    const albumId = track.albumId || (await API.getInfo(track.tidalId))?.album?.id;
-    if (!albumId) return;
-    this._currentAlbumId = albumId;
+
+    // Lock immediately — before any API call — so Queue.refill() won't fire Tidal searches
+    this._loading = true;
 
     const overlay = $('album-overlay');
     overlay.innerHTML = `<div class="album-loading">Caricando disco…</div>`;
     overlay.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
 
-    this._loading = true;
     try {
-      // Retry up to 3 times on 429 with progressive back-off (3 s / 6 s / 10 s)
+      // Resolve albumId: use cached value or fall back to /info/ (with 429 retry)
+      let albumId = track.albumId;
+      if (!albumId) {
+        let infoResp = await fetchWithTimeout(`${API_BASE}/info/?id=${track.tidalId}`, 9000);
+        if (infoResp.status === 429) {
+          await new Promise(r => setTimeout(r, 3000));
+          infoResp = await fetchWithTimeout(`${API_BASE}/info/?id=${track.tidalId}`, 9000);
+        }
+        if (infoResp.ok) {
+          const infoJson = await infoResp.json();
+          albumId = infoJson?.data?.album?.id || null;
+        }
+      }
+      if (!albumId) throw new Error('album id not found');
+      this._currentAlbumId = albumId;
+
+      // Fetch album — retry up to 3 times on 429 with progressive back-off (3 s / 6 s / 10 s)
       const backoffs = [3000, 6000, 10000];
       let resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
       for (const delay of backoffs) {
