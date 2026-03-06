@@ -13,7 +13,7 @@ const DISCOGS_TOKEN = 'fvYYQHvhAEHVshXGPHYtbAWSlTUNQpnNJcBBbYCB';
 const QUEUE_REFILL_AT = 30;  // start refilling earlier so buffer is always ready
 const QUEUE_TARGET = 80;    // keep a deeper buffer so the rullino never runs dry
 const API_TIMEOUT = 9000;
-const RARE_POP_MAX = 70;  // filter out mainstream hits (pop > this) — raised to allow jazz/soul classics
+const RARE_POP_MAX = 90;  // only block absolute mega-hits — jazz/soul classics can reach pop 70–85 on Tidal
 const DISCOGS_HAVE_MAX = 500; // Discogs community.have ceiling — above this = too mainstream
 const LASTFM_KEY = 'acd1fbf80c19d2febdf1bf378293eedf';
 const LASTFM_SECRET = 'acd1fbf80c19d2febdf1bf378293eedf';
@@ -2312,7 +2312,20 @@ const Queue = {
 
           updateLoadingStep('Identifico brani dai titoli…', 'Groq AI');
           const parsed = await GroqEngine.parseTitles(allSamples.map(v => v.title));
-          const seeds = parsed.filter(p => p.artist && p.track).slice(0, 10);
+          let seeds = parsed.filter(p => p.artist && p.track).slice(0, 10);
+
+          // Regex fallback: if Groq gave few/no results, parse "Artist - Track" directly
+          if (seeds.length < 3) {
+            const reTitle = /^(.+?)\s*[-–—]\s*(.+)$/;
+            const regexSeeds = allSamples
+              .map(v => { const m = v.title.match(reTitle); return m ? { artist: m[1].trim(), track: m[2].trim() } : null; })
+              .filter(Boolean);
+            const existing = new Set(seeds.map(s => s.artist.toLowerCase()));
+            for (const s of regexSeeds) {
+              if (!existing.has(s.artist.toLowerCase())) { seeds.push(s); existing.add(s.artist.toLowerCase()); }
+            }
+            seeds = seeds.slice(0, 10);
+          }
           if (!seeds.length) throw new Error('no seeds');
 
           updateLoadingStep('Espando con Tidal + Last.fm in parallelo…', '');
@@ -2343,10 +2356,10 @@ const Queue = {
             (async () => {
               const res = [];
 
-              // Run primary + secondary LFM flows in parallel
-              const [trackSimLists, artistTopTracks] = await Promise.all([
+              // Run all three LFM flows in parallel for maximum speed and coverage
+              const [trackSimLists, artistTopTracks, seedArtistTracks] = await Promise.all([
 
-                // Primary: track.getSimilar gives direct artist+title pairs (most targeted)
+                // Primary: track.getSimilar — most genre-targeted
                 Promise.all(seeds.map(async ({ artist, track }) => {
                   try {
                     const qs = new URLSearchParams({ method: 'track.getSimilar', artist, track, api_key: LASTFM_KEY, format: 'json', limit: '15', autocorrect: '1' });
@@ -2356,7 +2369,7 @@ const Queue = {
                   } catch { return []; }
                 })),
 
-                // Secondary: artist.getSimilar → getTopTracks for extra variety
+                // Secondary: artist.getSimilar → getTopTracks for variety
                 (async () => {
                   const al = await Promise.all(seeds.slice(0, 7).map(async ({ artist }) => {
                     try {
@@ -2377,14 +2390,24 @@ const Queue = {
                   }));
                   return tl.flat();
                 })(),
+
+                // Tertiary: seed artists' own top tracks — guaranteed to be relevant and findable on Tidal
+                Promise.all(seeds.slice(0, 6).map(async ({ artist }) => {
+                  try {
+                    const qs = new URLSearchParams({ method: 'artist.getTopTracks', artist, api_key: LASTFM_KEY, format: 'json', limit: '8', autocorrect: '1' });
+                    const r = await fetchWithTimeout(`${LASTFM_BASE}/2.0/?${qs}`, API_TIMEOUT);
+                    const d = await r.json();
+                    return (d.toptracks?.track || []).slice(0, 6).map(t => ({ artist, name: t.name }));
+                  } catch { return []; }
+                })),
               ]);
 
-              // Combine, deduplicate, shuffle — cap at 64 for manageable search volume
+              // Combine all three flows, deduplicate, shuffle — cap at 72 for manageable search volume
               const seenC = new Set();
-              const candidates = [...trackSimLists.flat(), ...artistTopTracks]
+              const candidates = [...trackSimLists.flat(), ...artistTopTracks, ...seedArtistTracks.flat()]
                 .filter(c => { const k = `${c.artist}|${c.name}`.toLowerCase(); return seenC.has(k) ? false : (seenC.add(k), true); })
                 .sort(() => Math.random() - 0.5)
-                .slice(0, 64);
+                .slice(0, 72);
 
               updateLoadingStep('Cerco su Tidal…', `${candidates.length} candidati LFM`);
 
