@@ -2402,26 +2402,29 @@ const Queue = {
                 })),
               ]);
 
-              // Combine all three flows, deduplicate, shuffle — cap at 72 for manageable search volume
+              // Combine all three flows, deduplicate, shuffle
+              // Cap at 40 — keeps request volume low to avoid rate-limiting (HTTP 429)
               const seenC = new Set();
               const candidates = [...trackSimLists.flat(), ...artistTopTracks, ...seedArtistTracks.flat()]
                 .filter(c => { const k = `${c.artist}|${c.name}`.toLowerCase(); return seenC.has(k) ? false : (seenC.add(k), true); })
                 .sort(() => Math.random() - 0.5)
-                .slice(0, 72);
+                .slice(0, 40);
 
               updateLoadingStep('Cerco su Tidal…', `${candidates.length} candidati LFM`);
 
-              // Tidal search with 4s cap per query, batches of 20 for throughput
+              // Tidal search: 4s cap per query, batches of 8, 150ms pause between batches
+              // Smaller batches prevent HTTP 429 that would then break album loading
               const fastSearch = q => Promise.race([
                 API.search(q, null),
                 new Promise(r => setTimeout(() => r(null), 4000)),
               ]);
-              for (let i = 0; i < candidates.length && res.length < 30; i += 20) {
-                await Promise.all(candidates.slice(i, i + 20).map(async ({ artist, name }) => {
-                  if (res.length >= 30) return;
+              for (let i = 0; i < candidates.length && res.length < 25; i += 8) {
+                await Promise.all(candidates.slice(i, i + 8).map(async ({ artist, name }) => {
+                  if (res.length >= 25) return;
                   const f = await fastSearch(`${name} ${artist}`);
                   if (f && _tidalMatchOk(artist, name, f)) tryPush(f, res, 'yt_lfm');
                 }));
+                if (res.length < 25 && i + 8 < candidates.length) await new Promise(r => setTimeout(r, 150));
               }
               return res;
             })(),
@@ -4224,7 +4227,12 @@ const AlbumMode = {
     document.body.style.overflow = 'hidden';
 
     try {
-      const resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
+      let resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
+      // Retry once on 429 (rate-limit) after a short back-off
+      if (resp.status === 429) {
+        await new Promise(r => setTimeout(r, 2500));
+        resp = await fetchWithTimeout(`${API_BASE}/album/?id=${albumId}`, 14000);
+      }
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const d = await resp.json();
       const data = d.data;
